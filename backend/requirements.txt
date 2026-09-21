@@ -39,7 +39,6 @@ greenlet==3.5.6
 grpcio==1.84.0
 h11==0.16.0
 h2==4.4.1
-hf-xet==1.6.0
 hpack==4.2.0
 httpcore==1.0.9
 httpcore2==2.13.0
@@ -47,7 +46,6 @@ httptools==0.8.0
 httpx==0.28.1
 httpx-sse==0.4.3
 httpx2==2.13.0
-huggingface_hub==1.32.0
 hyperframe==6.1.0
 idna==3.20
 iniconfig==2.3.0
@@ -118,17 +116,12 @@ python-multipart==0.0.32
 python-pptx==1.0.2
 pywin32==312
 PyYAML==6.0.3
-qdrant-client==1.19.1
 redis==8.1.0
 regex==2026.9.10
 requests==2.34.2
 requests-toolbelt==1.0.0
 rich==15.0.0
 rsa==4.9.1
-safetensors==0.8.0
-scikit-learn==1.9.1
-scipy==1.18.1
-sentence-transformers==6.1.0
 setuptools==84.0.0
 shellingham==1.5.4
 six==1.17.0
@@ -139,10 +132,7 @@ sympy==1.14.0
 tenacity==9.1.4
 threadpoolctl==3.7.0
 tiktoken==0.14.0
-tokenizers==0.23.2
-torch==2.14.0
 tqdm==4.70.1
-transformers==5.17.0
 truststore==0.10.4
 typer==0.27.2
 typing-inspection==0.4.4

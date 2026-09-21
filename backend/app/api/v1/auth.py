@@ -2,6 +2,7 @@ import hashlib
 import os
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from jose import jwt
@@ -58,10 +59,10 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=Token)
-def login(user_in: UserLogin, db: Session = Depends(get_db)):
-    result = db.execute(select(User).where(User.email == user_in.email))
+def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    result = db.execute(select(User).where(User.email == form_data.username))
     user = result.scalars().first()
-    if not user or not verify_password(user_in.password, user.hashed_password):
+    if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
     token = create_access_token({"sub": user.id})
