@@ -1,0 +1,143 @@
+from datetime import datetime
+from app.workers.celery_app import celery_app
+from app.database.session import SessionLocal
+from app.models.document import Document, DocumentStatus
+from app.models.chunk import DocumentChunk
+from app.models.presentation import Presentation, PresentationStatus
+from app.models.slide import PresentationSlide
+from app.models.job import GenerationJob, JobStatus
+from app.document_processing.chunker import DocumentChunker
+from app.rag.vector_store import vector_store
+from app.rag.graph import rag_engine
+from app.presentation.renderer import PresentationRenderer
+from app.services.storage import storage_service
+
+
+def run_document_ingestion(document_id: str):
+    with SessionLocal() as db:
+        doc = db.get(Document, document_id)
+        if not doc:
+            return
+
+        try:
+            doc.status = DocumentStatus.PROCESSING
+            db.commit()
+
+            # Chunk document
+            chunker = DocumentChunker()
+            doc.status = DocumentStatus.CHUNKING
+            db.commit()
+
+            chunks_data = chunker.process_and_chunk(doc.id, doc.filename, doc.storage_path)
+
+            # Store in DB & Vector Store
+            doc.status = DocumentStatus.EMBEDDING
+            db.commit()
+
+            vector_ids = vector_store.upsert_chunks(doc.project_id, chunks_data)
+
+            for idx, c in enumerate(chunks_data):
+                v_id = vector_ids[idx] if idx < len(vector_ids) else None
+                chunk_obj = DocumentChunk(
+                    document_id=doc.id,
+                    chunk_index=c["chunk_index"],
+                    content=c["content"],
+                    page_number=c.get("page"),
+                    section=c.get("section"),
+                    metadata_json=c["metadata"],
+                    vector_id=v_id
+                )
+                db.add(chunk_obj)
+
+            doc.status = DocumentStatus.INDEXED
+            db.commit()
+        except Exception as e:
+            doc.status = DocumentStatus.FAILED
+            doc.error_message = str(e)
+            db.commit()
+
+
+def run_presentation_generation(job_id: str):
+    with SessionLocal() as db:
+        job = db.get(GenerationJob, job_id)
+        if not job:
+            return
+
+        pres = db.get(Presentation, job.presentation_id)
+        if not pres:
+            return
+
+        try:
+            # Step 1: Document Retrieval
+            job.status = JobStatus.RETRIEVING_DOCUMENTS
+            job.progress = 20
+            job.current_step_description = "Retrieving relevant context from project documents"
+            pres.status = PresentationStatus.GENERATING
+            db.commit()
+
+            # Step 2: Outline & Slide Content Generation
+            job.status = JobStatus.GENERATING_OUTLINE
+            job.progress = 40
+            job.current_step_description = "Generating presentation outline and slide content"
+            db.commit()
+
+            spec = rag_engine.execute(
+                project_id=pres.project_id,
+                prompt=pres.prompt,
+                theme=pres.theme
+            )
+
+            # Step 3: Rendering Presentation
+            job.status = JobStatus.RENDERING_PRESENTATION
+            job.progress = 70
+            job.current_step_description = "Rendering deterministic PowerPoint slides"
+            db.commit()
+
+            output_pptx_path = storage_service.get_presentation_path(pres.project_id, pres.id)
+            renderer = PresentationRenderer(theme_name=pres.theme)
+            renderer.render(spec, output_pptx_path)
+
+            # Save generated slides into database
+            for slide_idx, s_spec in enumerate(spec.slides, start=1):
+                s_dict = s_spec.model_dump() if hasattr(s_spec, "model_dump") else s_spec
+                slide_obj = PresentationSlide(
+                    presentation_id=pres.id,
+                    slide_number=slide_idx,
+                    slide_type=s_dict.get("type", "bullet"),
+                    content_json=s_dict,
+                    citations_json=s_dict.get("citations", [])
+                )
+                db.add(slide_obj)
+
+            # Step 4: Validate & Complete
+            job.status = JobStatus.VALIDATING_SLIDES
+            job.progress = 90
+            job.current_step_description = "Validating layout bounds and final presentation"
+            db.commit()
+
+            job.status = JobStatus.COMPLETED
+            job.progress = 100
+            job.current_step_description = "Presentation generation complete!"
+            job.completed_at = datetime.utcnow()
+
+            pres.status = PresentationStatus.COMPLETED
+            pres.pptx_path = output_pptx_path
+            pres.title = spec.title or pres.title
+            db.commit()
+
+        except Exception as e:
+            job.status = JobStatus.FAILED
+            job.error_message = str(e)
+            job.current_step_description = f"Generation failed: {str(e)}"
+            pres.status = PresentationStatus.FAILED
+            db.commit()
+
+
+@celery_app.task(name="tasks.process_document")
+def process_document_task(document_id: str):
+    run_document_ingestion(document_id)
+
+
+@celery_app.task(name="tasks.generate_presentation")
+def generate_presentation_task(job_id: str):
+    run_presentation_generation(job_id)
