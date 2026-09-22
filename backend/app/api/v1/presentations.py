@@ -18,7 +18,7 @@ from app.schemas.presentation import (
     SlideRegenerateRequest,
     SlideResponse
 )
-from app.workers.tasks import run_presentation_generation
+from app.workers.tasks import dispatch_presentation_generation
 from app.rag.graph import rag_engine
 
 router = APIRouter(tags=["Presentations"])
@@ -59,8 +59,8 @@ def generate_presentation(
     db.commit()
     db.refresh(job)
 
-    # 3. Trigger background generation task
-    background_tasks.add_task(run_presentation_generation, job.id)
+    # 3. Trigger generation task via Celery worker (with fallback)
+    dispatch_presentation_generation(job.id, background_tasks)
 
     return GenerationProgressResponse(
         job_id=job.id,
@@ -69,6 +69,7 @@ def generate_presentation(
         progress=job.progress,
         current_step=job.current_step_description
     )
+
 
 
 @router.get("/projects/{project_id}/presentations", response_model=List[PresentationResponse])

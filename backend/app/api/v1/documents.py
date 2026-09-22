@@ -9,7 +9,7 @@ from app.models.project import Project
 from app.models.document import Document, DocumentStatus
 from app.schemas.document import DocumentResponse
 from app.services.storage import storage_service
-from app.workers.tasks import run_document_ingestion
+from app.workers.tasks import dispatch_document_ingestion
 from app.document_processing.detector import DocumentTypeDetector
 
 router = APIRouter(tags=["Documents"])
@@ -54,8 +54,8 @@ async def upload_document(
     doc.storage_path = saved_path
     db.commit()
 
-    # 3. Trigger ingestion background task
-    background_tasks.add_task(run_document_ingestion, doc.id)
+    # 3. Trigger ingestion task via Celery worker (with fallback)
+    dispatch_document_ingestion(doc.id, background_tasks)
 
     return doc
 
@@ -109,5 +109,6 @@ def reindex_document(
     doc.error_message = None
     db.commit()
 
-    background_tasks.add_task(run_document_ingestion, doc.id)
+    dispatch_document_ingestion(doc.id, background_tasks)
     return doc
+

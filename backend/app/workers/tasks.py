@@ -1,4 +1,7 @@
+import logging
 from datetime import datetime
+from typing import Optional
+from fastapi import BackgroundTasks
 from app.workers.celery_app import celery_app
 from app.database.session import SessionLocal
 from app.models.document import Document, DocumentStatus
@@ -11,6 +14,8 @@ from app.rag.vector_store import vector_store
 from app.rag.graph import rag_engine
 from app.presentation.renderer import PresentationRenderer
 from app.services.storage import storage_service
+
+logger = logging.getLogger(__name__)
 
 
 def run_document_ingestion(document_id: str):
@@ -141,3 +146,30 @@ def process_document_task(document_id: str):
 @celery_app.task(name="tasks.generate_presentation")
 def generate_presentation_task(job_id: str):
     run_presentation_generation(job_id)
+
+
+def dispatch_document_ingestion(document_id: str, background_tasks: Optional[BackgroundTasks] = None):
+    """Dispatch document ingestion task to Celery worker, with fallback to FastAPI background tasks."""
+    try:
+        process_document_task.delay(document_id)
+        logger.info(f"Dispatched document ingestion task {document_id} to Celery worker.")
+    except Exception as e:
+        logger.warning(f"Celery broker unavailable ({e}). Falling back to in-process execution.")
+        if background_tasks:
+            background_tasks.add_task(run_document_ingestion, document_id)
+        else:
+            run_document_ingestion(document_id)
+
+
+def dispatch_presentation_generation(job_id: str, background_tasks: Optional[BackgroundTasks] = None):
+    """Dispatch presentation generation task to Celery worker, with fallback to FastAPI background tasks."""
+    try:
+        generate_presentation_task.delay(job_id)
+        logger.info(f"Dispatched presentation generation task {job_id} to Celery worker.")
+    except Exception as e:
+        logger.warning(f"Celery broker unavailable ({e}). Falling back to in-process execution.")
+        if background_tasks:
+            background_tasks.add_task(run_presentation_generation, job_id)
+        else:
+            run_presentation_generation(job_id)
+
