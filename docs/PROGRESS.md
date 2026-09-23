@@ -4,6 +4,19 @@ Newest entry first. At the end of every session, add: **what changed · what's b
 
 ---
 
+## 2026-09-23: Fixed "Generate PPT produces no output"
+
+**Root causes found:** (1) the Google model `gemini-1.5-pro` is retired (404), so every generation errored. (2) The user's job was stuck at 40 % because the in-process task died, and the UI showed nothing for failed or stuck jobs.
+(3) With Redis down, each dispatch blocked for ~100 s in Celery reconnect retries before falling back. (4) DOCX ingestion failed on Pinecone null metadata. (5) Download returned 401.
+**Changed:** `rag/graph.py` (current default models, `LLM_MODEL` override, stricter prompt with top-level JSON shape and exact slide count, robust JSON parsing, logged fallback);
+`workers/tasks.py` (num_slides/audience passed through, fast Redis ping before `.delay`); `api/v1/presentations.py` (stale-job → FAILED, ownership on progress/download);
+`rag/vector_store.py` + `rag/retriever.py` (Pinecone metadata sanitised, `table_data` JSON round-trip); frontend (blob download helper in `lib/api.ts`, error panel in the Generate tab, status badge on decks without a file).
+**Verified:** via TestClient as the real user: the old job was marked FAILED, the DOCX re-indexed OK, a 6-slide Modern deck was generated (COMPLETED) and downloaded (200, valid .pptx). pytest 6/6 passed, `tsc --noEmit` is clean.
+Not verified in a browser yet.
+**Resume here:** `TASKS.md` → P0 login fix.
+
+---
+
 ## 2026-09-23: Merged handoff from previous agent (Anti-Gravity)
 
 **Changed:** `PRD.md` now includes the confirmed motive, target users and deliverables, and the build history below.

@@ -1,9 +1,18 @@
 import json
+import logging
 from typing import Dict, Any, List, TypedDict, Optional
 from pydantic import BaseModel
 from app.core.config import settings
 from app.rag.retriever import retriever
 from app.schemas.presentation_spec import PresentationSpec, SlideSpec, Citation
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-5",
+    "openai": "gpt-4o",
+    "google": "gemini-2.5-flash",
+}
 
 
 class GraphState(TypedDict):
@@ -25,16 +34,30 @@ class LangGraphRAGEngine:
         self.provider = settings.LLM_PROVIDER
 
     def _get_llm(self):
+        model = settings.LLM_MODEL or DEFAULT_MODELS.get(self.provider)
         if settings.ANTHROPIC_API_KEY and self.provider == "anthropic":
             from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(model="claude-3-5-sonnet-20240620", api_key=settings.ANTHROPIC_API_KEY)
+            return ChatAnthropic(model=model, api_key=settings.ANTHROPIC_API_KEY, max_tokens=8192)
         elif settings.OPENAI_API_KEY and self.provider == "openai":
             from langchain_openai import ChatOpenAI
-            return ChatOpenAI(model="gpt-4o", api_key=settings.OPENAI_API_KEY)
+            return ChatOpenAI(model=model, api_key=settings.OPENAI_API_KEY)
         elif settings.GOOGLE_API_KEY and self.provider == "google":
             from langchain_google_genai import ChatGoogleGenerativeAI
-            return ChatGoogleGenerativeAI(model="gemini-1.5-pro", google_api_key=settings.GOOGLE_API_KEY)
+            return ChatGoogleGenerativeAI(model=model, google_api_key=settings.GOOGLE_API_KEY)
+        logger.warning(f"No API key for LLM_PROVIDER '{self.provider}'. Using deterministic fallback spec.")
         return None
+
+    @staticmethod
+    def _parse_spec(content: Any) -> PresentationSpec:
+        # Some providers return a list of content blocks instead of a plain string
+        if isinstance(content, list):
+            content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+        raw_text = str(content)
+        # Take the outermost JSON object, ignoring code fences or prose around it
+        start, end = raw_text.find("{"), raw_text.rfind("}")
+        if start == -1 or end <= start:
+            raise ValueError("LLM response contained no JSON object")
+        return PresentationSpec.model_validate(json.loads(raw_text[start:end + 1]))
 
     def execute(self, project_id: str, prompt: str, num_slides: int = 10, audience: str = "General", theme: str = "Professional") -> PresentationSpec:
         # Step 1: Query Analysis & Decomposition
@@ -76,7 +99,12 @@ Target Slide Count: {num_slides}
 Target Audience: {audience}
 
 CRITICAL RULES:
-- Output MUST be valid JSON adhering strictly to the schema.
+- Output MUST be a single valid JSON object and nothing else, shaped exactly like:
+  {{ "title": str, "subtitle": str, "slides": [ <slide>, ... ] }}
+- Produce exactly {num_slides} slides. Start with a "title" slide and end with a "summary" slide.
+- Every slide except "title" should include "citations": [{{ "document_name": str, "page": int|null, "section": str, "excerpt": str }}]
+  taken from the document headers in the context below.
+- Only use "table" or "chart" slides when the context contains the actual numbers.
 - Do NOT output any layout coordinates, x, y, width, height, font sizes, or inline styling.
 - Available slide types:
   1. "title": {{ "type": "title", "title": str, "subtitle": str }}
@@ -91,18 +119,12 @@ CRITICAL RULES:
 Retrieved Context:
 {context_str}
 """
-        response = llm.invoke(system_prompt + "\nGenerate the PresentationSpec JSON:")
-        
+        response = llm.invoke(system_prompt + f"\nUser request: {prompt}\n\nGenerate the PresentationSpec JSON:")
+
         try:
-            # Clean json fences if present
-            raw_text = response.content.strip()
-            if raw_text.startswith("```json"):
-                raw_text = raw_text[7:]
-            if raw_text.endswith("```"):
-                raw_text = raw_text[:-3]
-            data = json.loads(raw_text.strip())
-            return PresentationSpec.model_validate(data)
-        except Exception:
+            return self._parse_spec(response.content)
+        except Exception as e:
+            logger.warning(f"LLM returned an invalid PresentationSpec ({e}). Using deterministic fallback spec.")
             return self._generate_fallback_spec(prompt, contexts, num_slides, theme)
 
     def _generate_fallback_spec(self, prompt: str, contexts: List[Dict[str, Any]], num_slides: int, theme: str) -> PresentationSpec:

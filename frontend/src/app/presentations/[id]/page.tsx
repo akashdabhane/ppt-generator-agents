@@ -3,7 +3,7 @@
 import { useState, use } from "react";
 import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, downloadPresentation } from "@/lib/api";
 import {
   Presentation,
   Download,
@@ -80,15 +80,13 @@ export default function PresentationPreviewPage({ params }: { params: Promise<{ 
             <span>Regenerate Slide {activeSlideIndex + 1}</span>
           </button>
 
-          <a
-            href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1"}/presentations/${presentationId}/download`}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            onClick={() => downloadPresentation(presentationId, presentation?.title)}
             className="px-5 py-2 bg-[#055a44] hover:bg-[#044836] text-white text-xs font-semibold rounded-xl shadow-xs transition flex items-center space-x-2"
           >
             <Download className="w-4 h-4" />
             <span>Download PPTX</span>
-          </a>
+          </button>
         </div>
       </div>
 

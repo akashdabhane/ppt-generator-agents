@@ -1,3 +1,4 @@
+import json
 from typing import List, Dict, Any, Optional
 from app.rag.vector_store import vector_store
 
@@ -24,6 +25,12 @@ class HybridRetriever:
                 dedup_key = f"{doc_name}_{page}_{chunk_id}"
                 if dedup_key not in seen_keys:
                     seen_keys.add(dedup_key)
+                    table_data = meta.get("table_data")
+                    if isinstance(table_data, str):  # Pinecone stores it as a JSON string
+                        try:
+                            table_data = json.loads(table_data)
+                        except ValueError:
+                            table_data = None
                     all_results.append({
                         "content": res["content"],
                         "document": doc_name,
@@ -32,7 +39,7 @@ class HybridRetriever:
                         "relevance_score": res.get("score", 1.0),
                         "chunk_index": chunk_id,
                         "is_table": meta.get("is_table", False),
-                        "table_data": meta.get("table_data")
+                        "table_data": table_data
                     })
 
         # Rerank by relevance score

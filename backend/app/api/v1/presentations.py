@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from fastapi.responses import FileResponse
@@ -22,6 +23,8 @@ from app.workers.tasks import dispatch_presentation_generation
 from app.rag.graph import rag_engine
 
 router = APIRouter(tags=["Presentations"])
+
+STALE_JOB_TIMEOUT = timedelta(minutes=10)
 
 
 @router.post("/projects/{project_id}/presentations/generate", response_model=GenerationProgressResponse)
@@ -60,7 +63,12 @@ def generate_presentation(
     db.refresh(job)
 
     # 3. Trigger generation task via Celery worker (with fallback)
-    dispatch_presentation_generation(job.id, background_tasks)
+    dispatch_presentation_generation(
+        job.id,
+        background_tasks,
+        num_slides=req.num_slides,
+        audience=req.audience or "General",
+    )
 
     return GenerationProgressResponse(
         job_id=job.id,
@@ -136,6 +144,11 @@ def get_presentation_progress(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    pres = db.get(Presentation, presentation_id)
+    project = db.get(Project, pres.project_id) if pres else None
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Presentation not found")
+
     result = db.execute(
         select(GenerationJob)
         .where(GenerationJob.presentation_id == presentation_id)
@@ -144,6 +157,17 @@ def get_presentation_progress(
     job = result.scalars().first()
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
+
+    # A job whose worker process died (e.g. server restart) never reaches a final state
+    if (
+        job.status not in (JobStatus.COMPLETED, JobStatus.FAILED)
+        and datetime.utcnow() - job.started_at > STALE_JOB_TIMEOUT
+    ):
+        job.status = JobStatus.FAILED
+        job.error_message = "Generation timed out or the worker stopped. Please try again."
+        job.current_step_description = job.error_message
+        pres.status = PresentationStatus.FAILED
+        db.commit()
 
     return GenerationProgressResponse(
         job_id=job.id,
@@ -162,7 +186,10 @@ def download_presentation(
     db: Session = Depends(get_db)
 ):
     pres = db.get(Presentation, presentation_id)
-    if not pres or not pres.pptx_path or not os.path.exists(pres.pptx_path):
+    project = db.get(Project, pres.project_id) if pres else None
+    if not project or project.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Presentation not found")
+    if not pres.pptx_path or not os.path.exists(pres.pptx_path):
         raise HTTPException(status_code=404, detail="PPTX file not found or generation incomplete")
 
     filename = f"{pres.title.replace(' ', '_')}.pptx"

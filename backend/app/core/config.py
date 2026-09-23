@@ -30,6 +30,7 @@ class Settings(BaseSettings):
 
     # LLM Providers & Embeddings
     LLM_PROVIDER: str = "anthropic"  # "anthropic", "openai", "google"
+    LLM_MODEL: Optional[str] = None  # Overrides the provider's default model in rag/graph.py
     ANTHROPIC_API_KEY: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     GOOGLE_API_KEY: Optional[str] = None

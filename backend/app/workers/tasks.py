@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 from fastapi import BackgroundTasks
+from app.core.config import settings
 from app.workers.celery_app import celery_app
 from app.database.session import SessionLocal
 from app.models.document import Document, DocumentStatus
@@ -62,7 +63,7 @@ def run_document_ingestion(document_id: str):
             db.commit()
 
 
-def run_presentation_generation(job_id: str):
+def run_presentation_generation(job_id: str, num_slides: int = 10, audience: str = "General"):
     with SessionLocal() as db:
         job = db.get(GenerationJob, job_id)
         if not job:
@@ -89,6 +90,8 @@ def run_presentation_generation(job_id: str):
             spec = rag_engine.execute(
                 project_id=pres.project_id,
                 prompt=pres.prompt,
+                num_slides=num_slides,
+                audience=audience,
                 theme=pres.theme
             )
 
@@ -138,19 +141,32 @@ def run_presentation_generation(job_id: str):
             db.commit()
 
 
+def _broker_available() -> bool:
+    """Quick Redis ping so dispatch falls back immediately instead of waiting on Celery's long reconnect retries."""
+    try:
+        import redis
+        client = redis.Redis.from_url(settings.CELERY_BROKER_URL, socket_connect_timeout=1, socket_timeout=1)
+        client.ping()
+        return True
+    except Exception:
+        return False
+
+
 @celery_app.task(name="tasks.process_document")
 def process_document_task(document_id: str):
     run_document_ingestion(document_id)
 
 
 @celery_app.task(name="tasks.generate_presentation")
-def generate_presentation_task(job_id: str):
-    run_presentation_generation(job_id)
+def generate_presentation_task(job_id: str, num_slides: int = 10, audience: str = "General"):
+    run_presentation_generation(job_id, num_slides, audience)
 
 
 def dispatch_document_ingestion(document_id: str, background_tasks: Optional[BackgroundTasks] = None):
     """Dispatch document ingestion task to Celery worker, with fallback to FastAPI background tasks."""
     try:
+        if not _broker_available():
+            raise ConnectionError(f"Redis broker not reachable at {settings.CELERY_BROKER_URL}")
         process_document_task.delay(document_id)
         logger.info(f"Dispatched document ingestion task {document_id} to Celery worker.")
     except Exception as e:
@@ -161,15 +177,22 @@ def dispatch_document_ingestion(document_id: str, background_tasks: Optional[Bac
             run_document_ingestion(document_id)
 
 
-def dispatch_presentation_generation(job_id: str, background_tasks: Optional[BackgroundTasks] = None):
+def dispatch_presentation_generation(
+    job_id: str,
+    background_tasks: Optional[BackgroundTasks] = None,
+    num_slides: int = 10,
+    audience: str = "General",
+):
     """Dispatch presentation generation task to Celery worker, with fallback to FastAPI background tasks."""
     try:
-        generate_presentation_task.delay(job_id)
+        if not _broker_available():
+            raise ConnectionError(f"Redis broker not reachable at {settings.CELERY_BROKER_URL}")
+        generate_presentation_task.delay(job_id, num_slides, audience)
         logger.info(f"Dispatched presentation generation task {job_id} to Celery worker.")
     except Exception as e:
         logger.warning(f"Celery broker unavailable ({e}). Falling back to in-process execution.")
         if background_tasks:
-            background_tasks.add_task(run_presentation_generation, job_id)
+            background_tasks.add_task(run_presentation_generation, job_id, num_slides, audience)
         else:
-            run_presentation_generation(job_id)
+            run_presentation_generation(job_id, num_slides, audience)
 

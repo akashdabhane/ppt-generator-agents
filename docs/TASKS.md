@@ -6,19 +6,21 @@ Items marked 🐞 are confirmed bugs found by reading the code on 2026-09-22 (de
 
 ## P0: Broken core flows
 - [ ] 🐞 Fix login: `frontend/src/app/login/page.tsx` posts JSON `{email,password}`, but `/auth/login` expects form-urlencoded `username`/`password`. Send `URLSearchParams` with `username=email`.
-- [ ] 🐞 Fix download: `presentations/[id]/page.tsx` uses a plain `<a href>` (no Bearer token → 401). Fetch it via `api.get(..., {responseType: "blob"})` and trigger a save.
-- [ ] 🐞 Pass `num_slides`, `audience` (and `tone`, `language`) through to `rag_engine.execute`. Persist them on `Presentation` or the job, because the worker currently always uses the defaults.
-- [ ] 🐞 Pinecone upsert: metadata must not contain `null` values or nested objects (`table_data`, `page=None`). Drop the nulls and serialise `table_data` to a JSON string, then parse it back in the retriever.
+- [x] 🐞 Fix download: `presentations/[id]/page.tsx` uses a plain `<a href>` (no Bearer token → 401). Fetch it via `api.get(..., {responseType: "blob"})` and trigger a save.
+- [x] 🐞 Pass `num_slides`, `audience` through to `rag_engine.execute` (done via task arguments; `tone`/`language` still ignored and nothing is persisted on `Presentation`).
+- [x] 🐞 Pinecone upsert: metadata must not contain `null` values or nested objects (`table_data`, `page=None`). Drop the nulls and serialise `table_data` to a JSON string, then parse it back in the retriever.
 - [ ] 🐞 `requirements.txt` is UTF-16 and includes `pywin32` (Windows-only), so the Linux Docker build fails. Rewrite it as UTF-8 with only the direct dependencies.
 - [ ] 🐞 `frontend/Dockerfile` copies `.next/standalone`, but `next.config.ts` lacks `output: "standalone"`. Add it (and run `node server.js` in the runner).
 
 ## P1: Security & correctness
-- [ ] 🐞 Add project-ownership checks to: `GET /presentations/{id}/progress`, `/download`, `/slides/{n}/regenerate`, `DELETE /presentations/{id}`, `POST /documents/{id}/reindex`. Extract a shared `get_owned_project` / `get_owned_presentation` dependency in `deps.py`.
+- [x] Ownership check + stale-job timeout (10 min → FAILED) on `GET /presentations/{id}/progress`; ownership check on `/download`.
+- [ ] Show why a document FAILED in the Documents tab (the error message is stored but not displayed).
+- [ ] 🐞 Add project-ownership checks to: `/slides/{n}/regenerate`, `DELETE /presentations/{id}`, `POST /documents/{id}/reindex`. Extract a shared `get_owned_project` / `get_owned_presentation` dependency in `deps.py`.
 - [ ] 🐞 Delete vectors when a document is deleted (`vector_store.delete_document_chunks`) and before reindexing (otherwise duplicate chunks).
 - [ ] 🐞 Slide regeneration: re-render the `.pptx` after updating a slide, and ask the LLM for a slide of the same type as the one it replaces (right now it takes `slides[0]` of a new deck, usually a title slide).
 - [ ] 🐞 Fallback spec invents data (a "Quarterly Performance" chart with made-up numbers and fixed challenges/solutions). Build it only from retrieved context, or mark it clearly as placeholder.
 - [ ] Load `SECRET_KEY` from env with no insecure default in production. Restrict CORS origins to `FRONTEND_URL`.
-- [ ] Update the LLM model IDs in `rag/graph.py` (Claude 3.5 Sonnet and Gemini 1.5 Pro are outdated) and make the model configurable via `LLM_MODEL` in settings.
+- [x] Update the LLM model IDs in `rag/graph.py` (Claude 3.5 Sonnet and Gemini 1.5 Pro are outdated) and make the model configurable via `LLM_MODEL` in settings.
 - [ ] Use structured output / tool calling for the spec instead of stripping ``` fences, and retry once with the validation error before falling back.
 - [ ] Embedding dimension: make it configurable and consistent across providers (Google `text-embedding-004` = 768 ≠ 1536).
 - [ ] Map `DocumentChunk` ↔ vector ids correctly for pgvector/Pinecone deletes (store `document_id` in metadata. Already there, but verify the Pinecone filter delete works on serverless).

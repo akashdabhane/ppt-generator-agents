@@ -95,7 +95,8 @@ All settings are in `core/config.py` and read from `backend/.env`. The important
 `VECTOR_DB_TYPE` (pinecone | pgvector | mock), `PINECONE_*`, `LLM_PROVIDER` (anthropic | openai | google),
 the provider API keys, `EMBEDDING_MODEL`, `SECRET_KEY`, and `STORAGE_DIR`. The frontend uses `NEXT_PUBLIC_API_URL`.
 
-LLM models are hard-coded in `rag/graph.py::_get_llm` and are outdated (see TASKS).
+LLM models: `DEFAULT_MODELS` in `rag/graph.py` (claude-sonnet-5 / gpt-4o / gemini-2.5-flash), overridable with `LLM_MODEL`.
+Dispatch pings Redis first (≈2 s) and falls back to BackgroundTasks immediately when it's down. If Redis is up but no worker is running, jobs wait in the queue until the 10-min stale timeout.
 Embeddings are fixed at 1536 dimensions, which matches OpenAI `text-embedding-3-small`.
 Google `text-embedding-004` returns 768 dimensions and will not fit the same index.
 

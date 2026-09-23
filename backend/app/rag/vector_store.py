@@ -125,6 +125,20 @@ class PineconeVectorStore(BaseVectorStore):
             logger.warning(f"Failed to initialize Pinecone client ({e}). Using MockInMemoryVectorStore fallback.")
             self._mock_store = MockInMemoryVectorStore()
 
+    @staticmethod
+    def _sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Pinecone metadata only accepts strings, numbers, booleans and lists of strings (no nulls, no nesting)."""
+        import json
+        clean = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            if isinstance(value, (dict, list)):
+                clean[key] = json.dumps(value)  # Parsed back by HybridRetriever
+            else:
+                clean[key] = value
+        return clean
+
     def upsert_chunks(self, project_id: str, chunks: List[Dict[str, Any]]) -> List[str]:
         if not self._initialized or not self.index:
             return self._mock_store.upsert_chunks(project_id, chunks)
@@ -137,7 +151,7 @@ class PineconeVectorStore(BaseVectorStore):
         for idx, chunk in enumerate(chunks):
             v_id = str(uuid.uuid4())
             vector_ids.append(v_id)
-            meta = chunk.get("metadata", {}).copy()
+            meta = self._sanitize_metadata(chunk.get("metadata", {}))
             meta["project_id"] = project_id
             meta["content"] = chunk["content"][:1000]  # Store preview in metadata
             

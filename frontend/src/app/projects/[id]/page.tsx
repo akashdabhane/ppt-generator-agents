@@ -4,7 +4,7 @@ import { useState, use } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, downloadPresentation } from "@/lib/api";
 import { useDropzone } from "react-dropzone";
 import {
   FileText,
@@ -36,6 +36,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [theme, setTheme] = useState("Professional");
   const [generationJob, setGenerationJob] = useState<any>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
 
   // Queries
   const { data: project } = useQuery({
@@ -95,6 +96,10 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       });
       return res.data;
     },
+    onMutate: () => setGenerationError(null),
+    onError: (err: { response?: { data?: { detail?: string } } }) => {
+      setGenerationError(err.response?.data?.detail || "Could not start generation. Is the backend running?");
+    },
     onSuccess: (data) => {
       setGenerationJob(data);
       setIsGenerating(true);
@@ -115,10 +120,13 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         } else if (res.data.status === "FAILED") {
           clearInterval(interval);
           setIsGenerating(false);
+          setGenerationError(res.data.error_message || "Presentation generation failed.");
+          refetchPresentations();
         }
       } catch {
         clearInterval(interval);
         setIsGenerating(false);
+        setGenerationError("Lost connection to the server while generating.");
       }
     }, 2000);
   };
@@ -365,6 +373,13 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               </div>
             )}
 
+            {generationError && (
+              <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 p-4 rounded-xl flex items-start gap-2 text-xs text-red-700 dark:text-red-300">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span><span className="font-semibold">Generation failed:</span> {generationError}</span>
+              </div>
+            )}
+
             <button
               onClick={() => generateMutation.mutate()}
               disabled={!prompt.trim() || isGenerating}
@@ -417,16 +432,22 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                         <span>Preview</span>
                       </Link>
 
-                      {pres.pptx_path && (
-                        <a
-                          href={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1"}/presentations/${pres.id}/download`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                      {pres.pptx_path ? (
+                        <button
+                          onClick={() => downloadPresentation(pres.id, pres.title)}
                           className="px-3 py-1.5 bg-[#055a44] hover:bg-[#044836] text-white text-xs font-semibold rounded-lg transition flex items-center space-x-1 shadow-xs"
                         >
                           <Download className="w-3.5 h-3.5" />
                           <span>PPTX</span>
-                        </a>
+                        </button>
+                      ) : (
+                        <span className={`text-xs px-2.5 py-1 rounded-full font-semibold border ${
+                          pres.status === "FAILED"
+                            ? "bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800"
+                            : "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800"
+                        }`}>
+                          {pres.status}
+                        </span>
                       )}
                     </div>
                   </div>
