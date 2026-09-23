@@ -1,3 +1,4 @@
+import logging
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -9,6 +10,10 @@ from app.models.project import Project
 from app.models.document import Document
 from app.models.presentation import Presentation
 from app.schemas.project import ProjectCreate, ProjectUpdate, ProjectResponse
+from app.services.storage import storage_service
+from app.rag.vector_store import vector_store
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects", tags=["Projects"])
 
@@ -99,6 +104,15 @@ def delete_project(
     if not project or project.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Documents are private: remove their vectors and files too, not just the DB rows.
+    # Vector cleanup is best-effort so an unreachable vector DB can't block the delete.
+    for doc in project.documents:
+        try:
+            vector_store.delete_document_chunks(project.id, doc.id)
+        except Exception as e:
+            logger.error(f"Failed to delete vectors for document {doc.id}: {e}")
+
     db.delete(project)
     db.commit()
+    storage_service.delete_project_dir(project_id)
     return None

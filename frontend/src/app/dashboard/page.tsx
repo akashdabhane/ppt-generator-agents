@@ -4,7 +4,8 @@ import { useState } from "react";
 import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { FolderPlus, Folder, FileText, Presentation, Plus, ArrowRight, Sparkles } from "lucide-react";
+import ConfirmDialog from "@/components/ConfirmDialog";
+import { FolderPlus, Folder, FileText, Presentation, Plus, ArrowRight, Sparkles, Trash2 } from "lucide-react";
 
 interface Project {
   id: string;
@@ -20,6 +21,7 @@ export default function DashboardPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
 
   const { data: projects = [], isLoading } = useQuery<Project[]>({
     queryKey: ["projects"],
@@ -41,6 +43,22 @@ export default function DashboardPage() {
       setDescription("");
     },
   });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (projectId: string) => await api.delete(`/projects/${projectId}`),
+    onSuccess: (_data, projectId) => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      queryClient.removeQueries({ queryKey: ["project", projectId] });
+      queryClient.removeQueries({ queryKey: ["documents", projectId] });
+      queryClient.removeQueries({ queryKey: ["presentations", projectId] });
+      setProjectToDelete(null);
+    },
+  });
+
+  const closeDeleteDialog = () => {
+    setProjectToDelete(null);
+    deleteMutation.reset();
+  };
 
   return (
     <div className="space-y-8 py-2">
@@ -126,22 +144,36 @@ export default function DashboardPage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {projects.map((project) => (
-              <Link
+              <div
                 key={project.id}
-                href={`/projects/${project.id}`}
-                className="group bg-white/80 dark:bg-[#0d120f] hover:bg-emerald-50/30 dark:hover:bg-zinc-900/60 border border-stone-200/80 dark:border-zinc-800 hover:border-emerald-600/50 dark:hover:border-emerald-500/50 p-6 rounded-2xl transition duration-200 shadow-xs hover:shadow-md flex flex-col justify-between"
+                className="group relative bg-white/80 dark:bg-[#0d120f] hover:bg-emerald-50/30 dark:hover:bg-zinc-900/60 border border-stone-200/80 dark:border-zinc-800 hover:border-emerald-600/50 dark:hover:border-emerald-500/50 p-6 rounded-2xl transition duration-200 shadow-xs hover:shadow-md flex flex-col justify-between"
               >
                 <div>
                   <div className="flex items-center justify-between mb-3">
                     <span className="p-2.5 bg-emerald-100/70 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 rounded-xl group-hover:scale-105 transition border border-emerald-200 dark:border-emerald-900/40">
                       <Folder className="w-5 h-5" />
                     </span>
-                    <span className="text-xs text-slate-400 dark:text-zinc-500 font-mono">
-                      {new Date(project.created_at).toLocaleDateString()}
-                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-slate-400 dark:text-zinc-500 font-mono">
+                        {new Date(project.created_at).toLocaleDateString()}
+                      </span>
+                      {/* Sits above the card's stretched link so clicking it doesn't open the project */}
+                      <button
+                        type="button"
+                        onClick={() => setProjectToDelete(project)}
+                        className="relative z-10 p-1.5 rounded-lg text-slate-400 dark:text-zinc-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition"
+                        title="Delete project"
+                        aria-label={`Delete project ${project.name}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                   <h3 className="text-lg font-bold text-slate-900 dark:text-white group-hover:text-emerald-700 dark:group-hover:text-emerald-400 transition">
-                    {project.name}
+                    {/* Stretched link: its ::after covers the whole card, keeping the card clickable */}
+                    <Link href={`/projects/${project.id}`} className="after:absolute after:inset-0 after:rounded-2xl">
+                      {project.name}
+                    </Link>
                   </h3>
                   <p className="text-slate-500 dark:text-zinc-400 text-xs sm:text-sm mt-1 line-clamp-2">
                     {project.description || "No description provided."}
@@ -160,11 +192,30 @@ export default function DashboardPage() {
                   </div>
                   <ArrowRight className="w-4 h-4 text-emerald-600 dark:text-emerald-400 group-hover:translate-x-1 transition" />
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
         )}
       </div>
+
+      {/* Delete Project Confirmation */}
+      <ConfirmDialog
+        open={projectToDelete !== null}
+        title="Delete this project?"
+        message={
+          <>
+            Do you really want to delete{" "}
+            <span className="font-semibold text-slate-800 dark:text-zinc-200">{projectToDelete?.name}</span>?
+            This permanently removes its {projectToDelete?.document_count ?? 0} document(s) and{" "}
+            {projectToDelete?.presentation_count ?? 0} generated deck(s). This can&apos;t be undone.
+          </>
+        }
+        confirmLabel="Delete Project"
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.isError ? "Could not delete the project. Please try again." : null}
+        onConfirm={() => projectToDelete && deleteMutation.mutate(projectToDelete.id)}
+        onCancel={closeDeleteDialog}
+      />
 
       {/* New Project Modal */}
       {isModalOpen && (

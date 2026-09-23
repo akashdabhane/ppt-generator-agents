@@ -35,5 +35,9 @@ class StorageService:
             return True
         return False
 
+    def delete_project_dir(self, project_id: str) -> None:
+        """Removes every uploaded document and generated deck of a project."""
+        shutil.rmtree(os.path.join(self.base_dir, "projects", project_id), ignore_errors=True)
+
 
 storage_service = StorageService()

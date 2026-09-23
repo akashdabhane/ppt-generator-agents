@@ -15,7 +15,7 @@ Items marked 🐞 are confirmed bugs found by reading the code on 2026-09-22 (de
 ## P1: Security & correctness
 - [x] Ownership check + stale-job timeout (10 min → FAILED) on `GET /presentations/{id}/progress`; ownership check on `/download`.
 - [ ] Show why a document FAILED in the Documents tab (the error message is stored but not displayed).
-- [ ] 🐞 Add project-ownership checks to: `/slides/{n}/regenerate`, `DELETE /presentations/{id}`, `POST /documents/{id}/reindex`. Extract a shared `get_owned_project` / `get_owned_presentation` dependency in `deps.py`.
+- [ ] 🐞 Add project-ownership checks to: `/slides/{n}/regenerate`, ~~`DELETE /presentations/{id}`~~ (done), `POST /documents/{id}/reindex`. Extract a shared `get_owned_project` / `get_owned_presentation` dependency in `deps.py`.
 - [ ] 🐞 Delete vectors when a document is deleted (`vector_store.delete_document_chunks`) and before reindexing (otherwise duplicate chunks).
 - [ ] 🐞 Slide regeneration: re-render the `.pptx` after updating a slide, and ask the LLM for a slide of the same type as the one it replaces (right now it takes `slides[0]` of a new deck, usually a title slide).
 - [ ] 🐞 Fallback spec invents data (a "Quarterly Performance" chart with made-up numbers and fixed challenges/solutions). Build it only from retrieved context, or mark it clearly as placeholder.
@@ -27,13 +27,13 @@ Items marked 🐞 are confirmed bugs found by reading the code on 2026-09-22 (de
 
 ## P2: Features & UX
 - [ ] PPTX ingestion: add `pptx_extractor.py` (python-pptx; per-slide text + tables). It is currently read as plain text, which produces garbage. Also add `.pptx` to the dropzone `accept`.
-- [ ] Auto-refresh the document list while any doc is not `INDEXED`/`FAILED` (`refetchInterval`).
+- [x] Auto-refresh the document list while any doc is not `INDEXED`/`FAILED` (`refetchInterval`).
 - [ ] Show `error_message` for failed documents and failed generation jobs in the UI.
 - [ ] Add a "Retry / Reindex" button for failed documents.
 - [ ] Add a `PATCH /projects/{id}` route (the schema already exists) and an edit UI.
 - [ ] Add a shared `frontend/src/lib/types.ts` for API types and remove the `any`s.
 - [ ] Add route protection: redirect to `/login` when there's no token, and handle 401 globally in an Axios interceptor.
-- [ ] Load `user` on refresh (`GET /auth/me`), because the Zustand store only keeps the token.
+- [x] Load `user` on refresh (`GET /auth/me`), because the Zustand store only keeps the token.
 - [ ] Replace the 2 s `setInterval` polling with TanStack `refetchInterval`, or implement real SSE.
 
 ## P3: Architecture & quality

@@ -21,7 +21,7 @@ Passwords are hashed with PBKDF2-SHA256 (100k iterations, 16-byte salt), stored 
 | POST | `/projects` | `{name, description?}` | `ProjectResponse` |
 | GET | `/projects` | — | `ProjectResponse[]` (includes `document_count`, `presentation_count`) |
 | GET | `/projects/{project_id}` | — | `ProjectResponse` |
-| DELETE | `/projects/{project_id}` | — | 204 |
+| DELETE | `/projects/{project_id}` | — | 204 (cascades DB rows; also deletes the project's vectors and its storage folder of uploads + decks) |
 
 `ProjectUpdate` exists as a schema, but there is no PATCH route.
 
@@ -46,7 +46,7 @@ Allowed extensions: `.pdf .docx .pptx .txt .csv .xlsx .xls .md .markdown`. Anyth
 | GET | `/presentations/{id}/progress` | — | `GenerationProgressResponse` (latest job) |
 | GET | `/presentations/{id}/download` | — | `.pptx` file |
 | POST | `/presentations/{id}/slides/{slide_number}/regenerate` | `{instructions?}` | `SlideResponse` |
-| DELETE | `/presentations/{id}` | — | 204 |
+| DELETE | `/presentations/{id}` | — | 204 (owner only, else 404; also deletes the `.pptx`). 409 while `PENDING`/`GENERATING` and younger than the 10-min stale timeout |
 
 ```jsonc
 // PresentationGenerateRequest

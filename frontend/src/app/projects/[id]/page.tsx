@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadPresentation } from "@/lib/api";
+import ConfirmDialog from "@/components/ConfirmDialog";
 import { useDropzone } from "react-dropzone";
 import {
   FileText,
@@ -37,6 +38,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [generationJob, setGenerationJob] = useState<any>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
+  const [presentationToDelete, setPresentationToDelete] = useState<{ id: string; title: string } | null>(null);
 
   // Queries
   const { data: project } = useQuery({
@@ -134,6 +136,22 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         setGenerationError("Lost connection to the server while generating.");
       }
     }, 2000);
+  };
+
+  // Delete presentation
+  const deletePresentationMutation = useMutation({
+    mutationFn: async (presentationId: string) => await api.delete(`/presentations/${presentationId}`),
+    onSuccess: (_data, presentationId) => {
+      refetchPresentations();
+      queryClient.removeQueries({ queryKey: ["presentation", presentationId] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setPresentationToDelete(null);
+    },
+  });
+
+  const closeDeletePresentationDialog = () => {
+    setPresentationToDelete(null);
+    deletePresentationMutation.reset();
   };
 
   // Delete document
@@ -429,6 +447,18 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                     <span className="text-xs text-slate-400 dark:text-zinc-500 font-medium">Theme: {pres.theme}</span>
 
                     <div className="flex items-center space-x-2">
+                      {/* The backend rejects deleting a deck that is still generating (409) */}
+                      <button
+                        type="button"
+                        onClick={() => setPresentationToDelete({ id: pres.id, title: pres.title })}
+                        disabled={pres.status === "PENDING" || pres.status === "GENERATING"}
+                        className="p-1.5 rounded-lg text-slate-400 dark:text-zinc-500 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition disabled:opacity-40 disabled:pointer-events-none"
+                        title={pres.status === "PENDING" || pres.status === "GENERATING" ? "Can't delete while generating" : "Delete presentation"}
+                        aria-label={`Delete presentation ${pres.title}`}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+
                       <Link
                         href={`/presentations/${pres.id}`}
                         className="px-3 py-1.5 bg-stone-200/80 dark:bg-zinc-800 hover:bg-stone-300 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 text-xs font-medium rounded-lg transition flex items-center space-x-1"
@@ -462,6 +492,29 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
           )}
         </div>
       )}
+
+      {/* Delete Presentation Confirmation */}
+      <ConfirmDialog
+        open={presentationToDelete !== null}
+        title="Delete this presentation?"
+        message={
+          <>
+            Do you really want to delete{" "}
+            <span className="font-semibold text-slate-800 dark:text-zinc-200">{presentationToDelete?.title}</span>?
+            Its slides and .pptx file will be permanently removed. Your documents are not affected. This can&apos;t be undone.
+          </>
+        }
+        confirmLabel="Delete Presentation"
+        isPending={deletePresentationMutation.isPending}
+        error={
+          deletePresentationMutation.isError
+            ? (deletePresentationMutation.error as { response?: { data?: { detail?: string } } }).response?.data?.detail ||
+              "Could not delete the presentation. Please try again."
+            : null
+        }
+        onConfirm={() => presentationToDelete && deletePresentationMutation.mutate(presentationToDelete.id)}
+        onCancel={closeDeletePresentationDialog}
+      />
     </div>
   );
 }

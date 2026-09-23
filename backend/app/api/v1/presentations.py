@@ -20,6 +20,7 @@ from app.schemas.presentation import (
     SlideResponse
 )
 from app.workers.tasks import dispatch_presentation_generation
+from app.services.storage import storage_service
 from app.rag.graph import rag_engine
 
 router = APIRouter(tags=["Presentations"])
@@ -245,9 +246,20 @@ def delete_presentation(
     db: Session = Depends(get_db)
 ):
     pres = db.get(Presentation, presentation_id)
-    if not pres:
+    project = db.get(Project, pres.project_id) if pres else None
+    if not project or project.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Presentation not found")
 
+    # The worker writes to this row and the .pptx while generating; a stale job may be deleted.
+    if (
+        pres.status in (PresentationStatus.PENDING, PresentationStatus.GENERATING)
+        and datetime.utcnow() - pres.created_at < STALE_JOB_TIMEOUT
+    ):
+        raise HTTPException(status_code=409, detail="This presentation is still generating. Try again once it finishes.")
+
+    pptx_path = pres.pptx_path
     db.delete(pres)
     db.commit()
+    if pptx_path:
+        storage_service.delete_file(pptx_path)
     return None

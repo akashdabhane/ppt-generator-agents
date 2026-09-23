@@ -4,6 +4,44 @@ Newest entry first. At the end of every session, add: **what changed · what's b
 
 ---
 
+## 2026-09-23: Delete presentation from the project's Decks tab
+
+**Changed:** Each deck card in `/projects/[id]` → Decks has a trash button that opens `ConfirmDialog` ("Do you really want to delete …?"). The button is disabled while the deck is `PENDING`/`GENERATING`.
+On success, `["presentations", id]` is refetched, `["presentation", presId]` is removed and `["projects"]` is invalidated (dashboard counts).
+Backend `DELETE /presentations/{id}` **had no ownership check** (any user could delete any deck). It now returns 404 for non-owners, returns 409 while a non-stale job is generating (the worker would otherwise write to a deleted row), and deletes the `.pptx` file.
+**Tests:** the shared SQLite fixture moved to `tests/conftest.py` (`api_env`). New `tests/test_delete_presentation.py` (4 tests). pytest 12/12 passed. `tsc --noEmit` clean. The page's pre-existing `any` lint errors are unchanged.
+**Not verified in a browser.**
+
+---
+
+## 2026-09-23: Delete project from the dashboard
+
+**Changed:** Dashboard project cards have a trash button that opens a new reusable `components/ConfirmDialog.tsx` ("Do you really want to delete …?", Esc/backdrop cancel, focus on Cancel).
+Cards are now a `div` with a stretched `<Link>` (the `::after` overlay) so the button isn't nested inside an `<a>`. On success, `["projects"]` is invalidated and the project's cached queries are removed.
+Backend `DELETE /projects/{id}` (which already existed with an ownership check) now also deletes each document's vectors (best-effort, logged on failure) and the project's storage folder (`StorageService.delete_project_dir`).
+**Tests:** new `tests/test_delete_project.py` (SQLite in-memory, projects router only): delete removes rows, files and vectors; another user's delete returns 404 and touches nothing. pytest 8/8 passed. eslint + `tsc --noEmit` clean.
+**Not verified in a browser.** Deleting a single *document* still leaves its vectors (TASKS item stays open).
+
+---
+
+## 2026-09-23: Logged-in user now survives a page refresh
+
+**Root cause:** the Zustand store persisted only the token to localStorage, while `user` lived in memory. After a reload the Navbar (which checks `user`) showed "Sign In", even though API calls still sent the valid token.
+**Changed:** `lib/store.ts` adds `setUser`. `components/Navbar.tsx` runs a `["me", token]` query to `GET /auth/me` when a token exists but `user` is null, restores the user, and calls `logout()` on a 401 (expired/invalid token).
+**Known:** "Sign In" can still show for the moment the `/auth/me` request is in flight after a reload.
+**Verified:** eslint + `tsc --noEmit` clean. Not verified in a browser. TASKS items "Load user on refresh" and "Auto-refresh document list" are ticked.
+
+---
+
+## 2026-09-23: Fixed dark-mode flash on page load
+
+**Root cause:** the saved theme was applied in a `useEffect` in `Providers.tsx`, which runs only after hydration, so every full load painted light first and switched to dark 1–2 s later.
+**Changed:** `app/layout.tsx` has an inline `<head>` script (Next 16 "preventing flash before hydration" pattern) that adds `.dark` to `<html>` from `localStorage.app_theme` before first paint.
+`components/Providers.tsx` no longer uses state + effect: `theme` is read from the `<html>` class via `useSyncExternalStore`, and `setTheme` updates the class, localStorage and the subscribers.
+**Verified:** eslint + `tsc --noEmit` clean on the changed files. Not verified in a browser.
+
+---
+
 ## 2026-09-23: Document status now updates live after upload
 
 **Root cause:** the `["documents", id]` query on `/projects/[id]` fetched once, so a status change during background ingestion only showed after a full page reload.

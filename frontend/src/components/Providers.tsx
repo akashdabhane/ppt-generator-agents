@@ -1,7 +1,7 @@
 "use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useState, useEffect, createContext, useContext } from "react";
+import { useState, useSyncExternalStore, createContext, useContext } from "react";
 
 type Theme = "light" | "dark";
 
@@ -12,6 +12,17 @@ interface ThemeContextType {
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
+
+// The source of truth is the "dark" class on <html>, which the inline script in app/layout.tsx
+// sets from localStorage before first paint. React just subscribes to it.
+const themeListeners = new Set<() => void>();
+const subscribeTheme = (listener: () => void) => {
+  themeListeners.add(listener);
+  return () => themeListeners.delete(listener);
+};
+const getThemeSnapshot = (): Theme =>
+  document.documentElement.classList.contains("dark") ? "dark" : "light";
+const getServerThemeSnapshot = (): Theme => "light";
 
 export function useTheme() {
   const context = useContext(ThemeContext);
@@ -35,32 +46,12 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     },
   }));
 
-  const [theme, setThemeState] = useState<Theme>("light");
-
-  useEffect(() => {
-    const savedTheme = localStorage.getItem("app_theme") as Theme | null;
-    if (savedTheme === "dark" || savedTheme === "light") {
-      setThemeState(savedTheme);
-      if (savedTheme === "dark") {
-        document.documentElement.classList.add("dark");
-      } else {
-        document.documentElement.classList.remove("dark");
-      }
-    } else {
-      // Default to light as requested
-      setThemeState("light");
-      document.documentElement.classList.remove("dark");
-    }
-  }, []);
+  const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot, getServerThemeSnapshot);
 
   const setTheme = (newTheme: Theme) => {
-    setThemeState(newTheme);
     localStorage.setItem("app_theme", newTheme);
-    if (newTheme === "dark") {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
-    }
+    document.documentElement.classList.toggle("dark", newTheme === "dark");
+    themeListeners.forEach((listener) => listener());
   };
 
   const toggleTheme = () => {

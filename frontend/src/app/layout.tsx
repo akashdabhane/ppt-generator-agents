@@ -18,6 +18,14 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Apply the saved theme before first paint so dark mode doesn't flash light on load. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{if(localStorage.getItem("app_theme")==="dark")document.documentElement.classList.add("dark")}catch(e){}})()`,
+          }}
+        />
+      </head>
       <body className={`${inter.className} bg-grid-pattern min-h-screen flex flex-col antialiased selection:bg-emerald-200 dark:selection:bg-emerald-900/50`}>
         <Providers>
           <Navbar />

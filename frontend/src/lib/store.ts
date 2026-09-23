@@ -10,6 +10,7 @@ interface AuthState {
   user: User | null;
   token: string | null;
   setAuth: (user: User, token: string) => void;
+  setUser: (user: User) => void;
   logout: () => void;
 }
 
@@ -22,6 +23,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
     set({ user, token });
   },
+  // Restores the user after a page reload; the token alone is persisted in localStorage.
+  setUser: (user) => set({ user }),
   logout: () => {
     if (typeof window !== "undefined") {
       localStorage.removeItem("token");

@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
+import { isAxiosError } from "axios";
+import { api } from "@/lib/api";
 import { useAuthStore } from "@/lib/store";
 import { useTheme } from "@/components/Providers";
 import {
@@ -16,7 +19,25 @@ import {
 export default function Navbar() {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, logout } = useAuthStore();
+  const { user, token, setUser, logout } = useAuthStore();
+
+  // Only the token survives a page reload, so re-fetch the user it belongs to.
+  // An expired or invalid token (401) is cleared instead of leaving a half-logged-in state.
+  useQuery({
+    queryKey: ["me", token],
+    queryFn: async () => {
+      try {
+        const me = (await api.get("/auth/me")).data;
+        setUser(me);
+        return me;
+      } catch (err) {
+        if (isAxiosError(err) && err.response?.status === 401) logout();
+        throw err;
+      }
+    },
+    enabled: !!token && !user,
+    retry: false,
+  });
   const { theme, toggleTheme } = useTheme();
 
   const handleLogout = () => {
