@@ -4,6 +4,25 @@ Newest entry first. At the end of every session, add: **what changed · what's b
 
 ---
 
+## 2026-09-23: Content accuracy of generated decks
+
+**Why:** the PRD's core promise is 100 % grounded content. Content was only as good as one unchecked LLM call over noisy retrieval.
+**Changed (pipeline order):**
+- Chunking: sentence-aware packing with sentence overlap. Figures and sentences are never cut (`chunker.py`).
+- Retrieval: LLM query planning + prompt-derived topic phrases, hybrid vector/BM25 ranking, MMR diversity, budget scaled to slide count.
+  The mock store no longer matches stopwords or substrings (`retriever.py`, `vector_store.py`, D-014).
+- Generation: numbered sources `[S1…]` cited by ID, stricter `CONTENT_RULES` (no outside knowledge, no computed figures, one fact per bullet),
+  audience/tone/language passed through API → worker → prompt, JSON retry (`graph.py`, class renamed `RAGPresentationEngine`).
+- Validation (new `validator.py`, D-013): exact citations with best-matching excerpt; structural normalisation; scale-aware figure check;
+  verbatim quote check; auto-citation; one LLM repair pass; enforcement removes remaining unsupported claims. `ValidationReport` summary
+  goes to the job, and progress now shows real stages (retrieve → write → fact-check → render).
+- Slide regeneration uses the same source IDs, check and enforcement.
+**Tests:** new `tests/test_accuracy.py` (15, including a scripted fake LLM for planning, retry, repair and removal). 62/62 pass.
+**Not verified with a real LLM key or in a browser.** Re-index existing documents to get sentence-aware chunks.
+**Resume here:** `TASKS.md` → P2 "Expose language/tone in the Generate form", "Show grounding summary on the preview".
+
+---
+
 ## 2026-09-23: Gap audit against the PRD + fixes
 
 Audited every PRD feature (F1–F13) and the four "must always hold" rules (§6) against the code. Found and fixed:

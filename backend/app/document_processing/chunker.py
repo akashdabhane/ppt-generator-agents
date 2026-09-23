@@ -1,3 +1,4 @@
+import re
 from typing import List, Dict, Any
 from app.document_processing.detector import DocumentTypeDetector
 from app.document_processing.extractors.pdf_extractor import PDFProcessor
@@ -87,14 +88,49 @@ class DocumentChunker:
 
         return chunks
 
+    # Sentence ends (., !, ? followed by whitespace) and line breaks
+    _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
+
     def _split_text(self, text: str, size: int, overlap: int) -> List[str]:
+        """
+        Packs whole sentences into chunks of at most `size` chars, repeating trailing sentences (up to `overlap`
+        chars) at the start of the next chunk. Never cuts a sentence, word or number in half unless a single
+        sentence is longer than `size`, in which case it is split at word boundaries.
+        """
+        text = text.strip()
         if len(text) <= size:
-            return [text]
-        
-        splits = []
-        start = 0
-        while start < len(text):
-            end = start + size
-            splits.append(text[start:end])
-            start += size - overlap
-        return splits
+            return [text] if text else []
+
+        units: List[str] = []
+        for sentence in (s.strip() for s in self._SENTENCE_BOUNDARY.split(text)):
+            if not sentence:
+                continue
+            if len(sentence) <= size:
+                units.append(sentence)
+                continue
+            piece = ""
+            for word in sentence.split():
+                if piece and len(piece) + 1 + len(word) > size:
+                    units.append(piece)
+                    piece = word
+                else:
+                    piece = f"{piece} {word}" if piece else word
+            if piece:
+                units.append(piece)
+
+        chunks: List[str] = []
+        current: List[str] = []
+        for unit in units:
+            if current and len(" ".join(current + [unit])) > size:
+                chunks.append(" ".join(current))
+                # Carry trailing sentences into the next chunk as overlap
+                carry: List[str] = []
+                for prev in reversed(current):
+                    if len(" ".join([prev] + carry)) > overlap:
+                        break
+                    carry.insert(0, prev)
+                current = carry if len(" ".join(carry + [unit])) <= size else []
+            current.append(unit)
+        if current:
+            chunks.append(" ".join(current))
+        return chunks

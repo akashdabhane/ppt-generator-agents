@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 from app.core.config import settings
 from app.services.embeddings import embedding_service
+from app.rag.text_utils import tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -63,11 +64,12 @@ class MockInMemoryVectorStore(BaseVectorStore):
         if not project_chunks:
             return []
         
-        query_terms = query.lower().split()
+        # Whole-word matching without stopwords ("the", "and" used to match every chunk)
+        query_terms = set(tokenize(query))
         results = []
         for chunk in project_chunks:
-            content_lower = chunk["content"].lower()
-            score = sum(1.0 for term in query_terms if term in content_lower)
+            content_terms = set(tokenize(chunk["content"]))
+            score = float(len(query_terms & content_terms))
             if score > 0 or len(project_chunks) <= top_k:
                 results.append({
                     "content": chunk["content"],

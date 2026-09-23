@@ -4,7 +4,8 @@ import pytest
 
 from app.models import Project, Document, DocumentStatus
 from app.rag import graph
-from app.rag.graph import LangGraphRAGEngine, NoGroundingContextError
+from app.rag.graph import RAGPresentationEngine, NoGroundingContextError
+from app.rag.validator import SpecValidator, build_sources
 from app.schemas.presentation_spec import PresentationSpec
 
 CONTEXTS = [
@@ -25,7 +26,7 @@ CONTEXTS = [
 
 @pytest.fixture
 def engine(monkeypatch):
-    eng = LangGraphRAGEngine()
+    eng = RAGPresentationEngine()
     monkeypatch.setattr(eng, "_get_llm", lambda: None)  # no API key → fallback deck
     return eng
 
@@ -76,14 +77,14 @@ def test_no_retrieved_context_refuses_to_generate(engine, monkeypatch):
 
 
 def test_llm_citations_to_unknown_documents_are_dropped():
-    spec = PresentationSpec.model_validate({"title": "t", "slides": [
+    raw = {"title": "t", "slides": [
         {"type": "bullet", "title": "b", "bullets": ["x"], "citations": [
             {"document_name": "Q3_report.pdf", "page": 2},
             {"document_name": "made_up_source.pdf"},
         ]},
-    ]})
-    grounded = LangGraphRAGEngine._ground_citations(spec, CONTEXTS)
-    assert [c.document_name for c in grounded.slides[0].citations] == ["Q3_report.pdf"]
+    ]}
+    resolved = SpecValidator(build_sources(CONTEXTS)).resolve_sources(raw)
+    assert [c["document_name"] for c in resolved["slides"][0]["citations"]] == ["Q3_report.pdf"]
 
 
 def test_generate_requires_an_indexed_document(api_env, monkeypatch):

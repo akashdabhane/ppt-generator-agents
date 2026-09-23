@@ -54,9 +54,12 @@ Allowed extensions: `.pdf .docx .pptx .txt .csv .xlsx .xls .md .markdown`. Anyth
 { "prompt": "str", "num_slides": 10, "audience": "General", "theme": "Professional",
   "tone": "Professional & Informative", "language": "English" }
 // theme ∈ Professional | Minimal | Dark | Corporate | Modern (unknown → Professional)
+// audience, tone and language are all passed to the LLM (language = language of the slide text)
 
 // GenerationProgressResponse
 { "job_id": "", "presentation_id": "", "status": "JobStatus", "progress": 0, "current_step": "", "error_message": null }
+// status: QUEUED → RETRIEVING_DOCUMENTS → GENERATING_SLIDE_CONTENT → VALIDATING_SLIDES → RENDERING_PRESENTATION → COMPLETED
+// when COMPLETED, current_step holds the grounding summary, e.g. "Complete: 8/8 content slides cited · 1 unsupported claim(s) removed"
 ```
 
 ## PresentationSpec: the LLM output contract (`schemas/presentation_spec.py`)
@@ -65,6 +68,8 @@ Allowed extensions: `.pdf .docx .pptx .txt .csv .xlsx .xls .md .markdown`. Anyth
 { "title": "str", "subtitle": "str?", "slides": [ SlideSpec, ... ] }
 ```
 Every slide has `type`, `title`, and `citations: [{document_name, page?, section?, excerpt?}]`.
+The LLM itself returns `"sources": ["S1", ...]` (IDs of the numbered retrieved passages). `SpecValidator.resolve_sources`
+turns them into `citations`, with `excerpt` = the source sentence that best matches the slide.
 
 | `type` | Extra fields |
 |---|---|

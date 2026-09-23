@@ -29,8 +29,7 @@ def test_upload_ingest_generate_download_without_api_keys(api_env, monkeypatch):
     monkeypatch.setattr(graph.retriever, "vector_store", store)
     monkeypatch.setattr(tasks, "storage_service", api_env["storage"])
     monkeypatch.setattr(presentations_api, "dispatch_presentation_generation",
-                        lambda job_id, bg=None, num_slides=10, audience="General":
-                        tasks.run_presentation_generation(job_id, num_slides, audience))
+                        lambda job_id, bg=None, **kw: tasks.run_presentation_generation(job_id, **kw))
 
     client, db = api_env["client"], api_env["db"]
     project = Project(user_id=api_env["owner"].id, name="Q3")

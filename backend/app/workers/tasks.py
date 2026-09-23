@@ -70,7 +70,8 @@ def run_document_ingestion(document_id: str):
             db.commit()
 
 
-def run_presentation_generation(job_id: str, num_slides: int = 10, audience: str = "General"):
+def run_presentation_generation(job_id: str, num_slides: int = 10, audience: str = "General",
+                                tone: str = "Professional & Informative", language: str = "English"):
     with SessionLocal() as db:
         job = db.get(GenerationJob, job_id)
         if not job:
@@ -80,33 +81,30 @@ def run_presentation_generation(job_id: str, num_slides: int = 10, audience: str
         if not pres:
             return
 
+        def on_progress(stage: str, percent: int, message: str):
+            job.status = JobStatus[stage]
+            job.progress = percent
+            job.current_step_description = message
+            db.commit()
+
         try:
-            # Step 1: Document Retrieval
-            job.status = JobStatus.RETRIEVING_DOCUMENTS
-            job.progress = 20
-            job.current_step_description = "Retrieving relevant context from project documents"
             pres.status = PresentationStatus.GENERATING
-            db.commit()
+            on_progress("RETRIEVING_DOCUMENTS", 5, "Starting generation")
 
-            # Step 2: Outline & Slide Content Generation
-            job.status = JobStatus.GENERATING_OUTLINE
-            job.progress = 40
-            job.current_step_description = "Generating presentation outline and slide content"
-            db.commit()
-
-            spec = rag_engine.execute(
+            # Steps 1-2: plan + retrieve, write, fact-check and repair (see rag/graph.py)
+            spec, report = rag_engine.execute_with_report(
                 project_id=pres.project_id,
                 prompt=pres.prompt,
                 num_slides=num_slides,
                 audience=audience,
-                theme=pres.theme
+                theme=pres.theme,
+                tone=tone,
+                language=language,
+                on_progress=on_progress,
             )
 
             # Step 3: Rendering Presentation
-            job.status = JobStatus.RENDERING_PRESENTATION
-            job.progress = 70
-            job.current_step_description = "Rendering deterministic PowerPoint slides"
-            db.commit()
+            on_progress("RENDERING_PRESENTATION", 80, f"Rendering slides ({report.summary()})")
 
             output_pptx_path = storage_service.get_presentation_path(pres.project_id, pres.id)
             renderer = PresentationRenderer(theme_name=pres.theme)
@@ -124,15 +122,10 @@ def run_presentation_generation(job_id: str, num_slides: int = 10, audience: str
                 )
                 db.add(slide_obj)
 
-            # Step 4: Validate & Complete
-            job.status = JobStatus.VALIDATING_SLIDES
-            job.progress = 90
-            job.current_step_description = "Validating layout bounds and final presentation"
-            db.commit()
-
+            # Step 4: Complete. The grounding summary stays on the job for troubleshooting
             job.status = JobStatus.COMPLETED
             job.progress = 100
-            job.current_step_description = "Presentation generation complete!"
+            job.current_step_description = f"Complete: {report.summary()}"
             job.completed_at = datetime.utcnow()
 
             pres.status = PresentationStatus.COMPLETED
@@ -165,8 +158,9 @@ def process_document_task(document_id: str):
 
 
 @celery_app.task(name="tasks.generate_presentation")
-def generate_presentation_task(job_id: str, num_slides: int = 10, audience: str = "General"):
-    run_presentation_generation(job_id, num_slides, audience)
+def generate_presentation_task(job_id: str, num_slides: int = 10, audience: str = "General",
+                               tone: str = "Professional & Informative", language: str = "English"):
+    run_presentation_generation(job_id, num_slides, audience, tone, language)
 
 
 def dispatch_document_ingestion(document_id: str, background_tasks: Optional[BackgroundTasks] = None):
@@ -189,17 +183,19 @@ def dispatch_presentation_generation(
     background_tasks: Optional[BackgroundTasks] = None,
     num_slides: int = 10,
     audience: str = "General",
+    tone: str = "Professional & Informative",
+    language: str = "English",
 ):
     """Dispatch presentation generation task to Celery worker, with fallback to FastAPI background tasks."""
     try:
         if not _broker_available():
             raise ConnectionError(f"Redis broker not reachable at {settings.CELERY_BROKER_URL}")
-        generate_presentation_task.delay(job_id, num_slides, audience)
+        generate_presentation_task.delay(job_id, num_slides, audience, tone, language)
         logger.info(f"Dispatched presentation generation task {job_id} to Celery worker.")
     except Exception as e:
         logger.warning(f"Celery broker unavailable ({e}). Falling back to in-process execution.")
         if background_tasks:
-            background_tasks.add_task(run_presentation_generation, job_id, num_slides, audience)
+            background_tasks.add_task(run_presentation_generation, job_id, num_slides, audience, tone, language)
         else:
-            run_presentation_generation(job_id, num_slides, audience)
+            run_presentation_generation(job_id, num_slides, audience, tone, language)
 

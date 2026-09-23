@@ -21,11 +21,13 @@ Items marked 🐞 are confirmed bugs found by reading the code on 2026-09-22 (de
 - [x] 🐞 Fallback spec invents data (a "Quarterly Performance" chart with made-up numbers and fixed challenges/solutions). Build it only from retrieved context, or mark it clearly as placeholder.
 - [ ] Load `SECRET_KEY` from env with no insecure default in production. Restrict CORS origins to `FRONTEND_URL`.
 - [x] Update the LLM model IDs in `rag/graph.py` (Claude 3.5 Sonnet and Gemini 1.5 Pro are outdated) and make the model configurable via `LLM_MODEL` in settings.
-- [ ] Use structured output / tool calling for the spec instead of stripping ``` fences, and retry once with the validation error before falling back.
+- [ ] Use structured output / tool calling for the spec instead of stripping ``` fences. (Retry once on invalid JSON and a fact-check repair pass are done, D-013.)
 - [ ] Embedding dimension: make it configurable and consistent across providers (Google `text-embedding-004` = 768 ≠ 1536).
 - [ ] Map `DocumentChunk` ↔ vector ids correctly for pgvector/Pinecone deletes (store `document_id` in metadata. Already there, but verify the Pinecone filter delete works on serverless).
 
 ## P2: Features & UX
+- [ ] Expose `language` and `tone` in the Generate form (the API and engine already use them).
+- [ ] Show the grounding summary (cited slides, removed claims) on the deck preview page. It's stored on the job today.
 - [ ] Persist `audience` (and `tone`/`language`) on `Presentation` so slide regeneration uses the deck's audience (needs a column → manual `ALTER` until Alembic).
 - [ ] Preview shows one entry per spec slide; a paginated table/list is several `.pptx` slides. Show "(continues on N slides)" in the preview.
 - [ ] Show upload errors (e.g. unsupported file type, 400) in the Documents tab; failed uploads are currently silent.
@@ -41,7 +43,7 @@ Items marked 🐞 are confirmed bugs found by reading the code on 2026-09-22 (de
 
 ## P3: Architecture & quality
 - [ ] Turn `rag/graph.py` into a real LangGraph `StateGraph` (analyze → retrieve → outline → per-slide generate → validate), or rename it to remove the "LangGraph" claim.
-- [ ] Add real reranking (e.g. a cross-encoder or LLM rerank) and use the LLM for query decomposition.
+- [x] Add real reranking and use the LLM for query decomposition (hybrid BM25 + vector + MMR, LLM query planning; D-014). A cross-encoder could still improve ranking.
 - [ ] Set up Alembic migrations and stop relying on `create_all`.
 - [x] Move the title-card geometry from `renderer.py` into `LayoutEngine`. Add bullet overflow handling (split long bullet lists across slides like tables). See D-010.
 - [x] Use theme text colours for two-column and quote-author text (currently default black, invisible on the Dark theme).

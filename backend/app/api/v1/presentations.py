@@ -84,6 +84,8 @@ def generate_presentation(
         background_tasks,
         num_slides=req.num_slides,
         audience=req.audience or "General",
+        tone=req.tone or "Professional & Informative",
+        language=req.language or "English",
     )
 
     return GenerationProgressResponse(

@@ -56,3 +56,20 @@ D-001 to D-009 were reconstructed from the existing code on 2026-09-22.
 - **Decision:** `PresentationRenderer._write()` sets font, size, bold/italic and colour on each run as well as `paragraph.font` (which python-pptx writes as `defRPr`, ignored by some importers).
 - **Consequences:** Decks look the same in PowerPoint, Google Slides, Keynote and LibreOffice. All text now has an explicit theme colour (this fixed black text on the Dark theme).
 
+### D-013 — The LLM cites source IDs; code builds citations and fact-checks figures (2026-09-23)
+- **Context:** The LLM wrote free-form citations (wrong pages/excerpts) and figures were never checked, so an invented or computed
+  number could reach a slide with a real-looking citation.
+- **Decision:** Retrieved chunks are numbered `[S1]…`. The LLM returns `"sources"` IDs, and `SpecValidator` turns them into exact
+  citations. Every figure on a slide must appear in its cited sources (scale-aware), and quotes must be verbatim. Deterministic
+  auto-citation runs first, then one LLM repair pass, then unsupported claims are removed. The figure check ignores bare integers
+  ≤ 10 and identifiers like Q3/FY2024.
+- **Consequences:** Up to 2 extra LLM calls (planning, and repair only when needed). A correct claim phrased with a figure the
+  sources don't literally contain (e.g. a computed total) is removed. That's intended: the PRD values verifiability over coverage.
+
+### D-014 — Hybrid retrieval with MMR, sentence-aware chunks (2026-09-23)
+- **Decision:** Per-query min-max normalised vector score (0.6) + BM25 over the candidate pool (0.4). MMR (λ 0.75, Jaccard on
+  content words) for diversity. The budget scales with `num_slides`. Chunks never split a sentence. The mock store matches whole
+  words without stopwords.
+- **Consequences:** Exact names, metrics and periods rank higher, and decks draw on more documents. Re-index existing documents
+  to get the new chunk boundaries (old chunks still work).
+

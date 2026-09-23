@@ -33,7 +33,7 @@ Files are stored on local disk: `backend/storage/projects/{project_id}/documents
 | `api/v1/` | Routers: `auth`, `projects`, `documents`, `presentations`; `deps.py` has `get_db`, `get_current_user` |
 | `document_processing/` | `detector.py` (extension → type), `extractors/*` (PDF, DOCX, XLSX/CSV, PPTX, text → raw blocks), `chunker.py` |
 | `services/` | `storage.py` (disk I/O), `embeddings.py` (OpenAI → Google → hash fallback) |
-| `rag/` | `vector_store.py` (adapters + factory), `retriever.py` (multi-query), `graph.py` (generation engine) |
+| `rag/` | `vector_store.py` (adapters + factory), `retriever.py` (hybrid multi-query + MMR), `graph.py` (engine + prompts), `validator.py` (grounding check/repair/enforce), `text_utils.py` (tokens, figures, sentences) |
 | `presentation/` | `layout_engine.py` (geometry + pagination), `themes.py`, `renderer.py` (python-pptx) |
 | `workers/` | `celery_app.py`, `tasks.py` (`run_*` functions, Celery tasks, `dispatch_*` with fallback) |
 
@@ -56,17 +56,29 @@ Files are stored on local disk: `backend/storage/projects/{project_id}/documents
 5. A `DocumentChunk` row is written per chunk (with `vector_id`), then `INDEXED`. Any exception sets `FAILED` + `error_message`.
    Ingestion is idempotent: it first deletes the document's previous vectors and chunk rows, so reindex/retry never duplicates.
 
-### Generation (`run_presentation_generation`)
-1. `POST /projects/{id}/presentations/generate` creates `Presentation(PENDING)` + `GenerationJob(QUEUED)` and dispatches.
-2. `rag_engine.execute()` expands the prompt into 4 fixed sub-queries → `HybridRetriever` searches each, dedupes by `filename_page_chunkindex`, sorts by score, keeps the top 15.
-3. Empty retrieval raises `NoGroundingContextError` (job `FAILED`). Otherwise it makes one LLM call that returns `PresentationSpec` JSON and drops citations to non-retrieved documents.
-   On a parse error or missing key it falls back to `_generate_fallback_spec`, which copies retrieved sentences/tables verbatim and cites each (nothing invented).
-4. `PresentationRenderer(theme).render(spec, path)`: a blank 16:9 slide per spec item. Tables are paginated by `LayoutEngine.split_table_rows`, and bullet/summary/two-column lists by `paginate_text_items`.
-5. One `PresentationSlide` row is written per **spec** slide (a paginated table is one DB row but several `.pptx` slides), then `COMPLETED`.
-6. The frontend polls `GET /presentations/{id}/progress` every 2 s.
+### Generation (`run_presentation_generation` → `rag_engine.execute_with_report`)
+1. `POST /projects/{id}/presentations/generate` (needs ≥ 1 `INDEXED` document) creates `Presentation(PENDING)` + `GenerationJob(QUEUED)`
+   and dispatches with `num_slides`, `audience`, `tone`, `language`. The engine reports each stage to the job through a progress callback.
+2. **Plan:** the LLM proposes 3–6 search queries. `heuristic_queries()` always adds topic phrases from the prompt with the deck
+   boilerplate removed ("Create a 10-slide presentation…"), and is the only planner when there's no LLM.
+3. **Retrieve** (`rag/retriever.py`): each query pulls a pool from the vector store. Vector scores are normalised per query, a BM25
+   keyword score is added (0.6 / 0.4), and MMR (λ 0.75) picks diverse chunks. Budget: `3 × num_slides` chunks (12–40), ≤ 45k chars.
+4. **Write:** sources are numbered `[S1]…[Sn]` with document/page/section. The LLM returns `PresentationSpec` JSON where slides list
+   `"sources": ["S2"]`. `CONTENT_RULES` in `graph.py` forbids outside knowledge and computed figures. Invalid JSON is retried once.
+5. **Validate** (`rag/validator.py`, D-013): source IDs → exact citations (excerpt = best-matching sentence). Structural fixes
+   (table widths, chart pairs, empty slides, title first, trim to `num_slides`). Every figure must appear in the slide's cited
+   sources (scale-aware: `$4.2M` = `$4,200,000`), and quotes must be verbatim. A figure found in another retrieved source is auto-cited.
+6. **Repair:** remaining issues go back to the LLM once, listed per slide. Then `enforce()` removes claims that are still unsupported
+   (bullets, table rows, charts, quotes). `ValidationReport.summary()` ("9/9 content slides cited · 1 unsupported claim(s) removed")
+   is kept on the job's `current_step_description`.
+7. No LLM, or unusable output: `_generate_fallback_spec` copies retrieved sentences/tables verbatim and cites each one, then goes through the same check/enforce.
+8. `PresentationRenderer(theme).render(spec, path)`. Tables are paginated by `LayoutEngine.split_table_rows`, and bullet/summary/two-column lists by `paginate_text_items`.
+9. One `PresentationSlide` row per **spec** slide, then `COMPLETED`. The frontend polls `GET /presentations/{id}/progress` every 2 s.
 
-> "LangGraph" appears in names (`graph.py`, `LangGraphRAGEngine`), but no LangGraph graph is built.
-> It is a sequential Python pipeline. Converting it into a real graph is a task in `TASKS.md`.
+Ingestion chunking (`DocumentChunker._split_text`) packs whole sentences up to 1000 chars with ~150 chars of sentence overlap,
+so a sentence or figure is never split between chunks.
+
+> The engine is `RAGPresentationEngine` in `rag/graph.py` (the file name is historical). It is a sequential Python pipeline, not LangGraph.
 
 ## 4. Data model
 
