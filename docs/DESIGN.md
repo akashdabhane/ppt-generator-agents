@@ -24,7 +24,8 @@ Don't mix them up.
 | Focus ring | `focus:ring-2 focus:ring-emerald-500` | same |
 
 CSS variables live in `frontend/src/app/globals.css`. Dark mode is **class-based** (`.dark` on `<html>`,
-Tailwind v4 `@custom-variant dark`), toggled by `Providers.tsx` and saved to `localStorage["app_theme"]`. Light is the default.
+Tailwind v4 `@custom-variant dark`), saved to `localStorage["app_theme"]` and applied before first paint by an inline
+script in `app/layout.tsx`. `Providers.tsx` reads it with `useSyncExternalStore`. Light is the default.
 **Every new element needs both light and dark classes.**
 
 ### Status colours (badges)

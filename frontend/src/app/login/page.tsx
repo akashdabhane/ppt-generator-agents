@@ -43,7 +43,7 @@ export default function LoginPage() {
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-100/70 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/40 mb-4">
             <Presentation className="w-7 h-7" />
           </div>
-          <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">Sign in to AI SlideRAG</h2>
+          <h2 className="text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">Sign in to Clarion</h2>
           <p className="mt-2 text-xs sm:text-sm text-slate-500 dark:text-zinc-400">Generate presentations directly from your knowledge base</p>
         </div>
 

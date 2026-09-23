@@ -25,7 +25,7 @@ Files are stored on local disk: `backend/storage/projects/{project_id}/documents
 
 | Package | Responsibility |
 |---|---|
-| `main.py` | FastAPI app, CORS, router registration, `Base.metadata.create_all` on startup (no migrations) |
+| `main.py` | FastAPI app, CORS (`CORS_ORIGINS`), router registration; on startup: `SECRET_KEY` check + Alembic upgrade (`database/migrate.py`) |
 | `core/config.py` | `Settings` (pydantic-settings, reads `.env`); singleton `settings` |
 | `database/session.py` | **Sync** SQLAlchemy engine + `SessionLocal`; rewrites `postgresql+asyncpg://` to `postgresql://` |
 | `models/` | ORM models (see §4) |
@@ -39,7 +39,7 @@ Files are stored on local disk: `backend/storage/projects/{project_id}/documents
 
 ### Design patterns in use
 
-- **Layered architecture:** routers → services/engines → models. Routers hold request validation and ownership checks.
+- **Layered architecture:** routers → services/engines → models. Ownership is enforced by the `get_owned_*` dependencies in `api/v1/deps.py`.
 - **Adapter + Factory:** `BaseVectorStore` with `PineconeVectorStore`, `PGVectorStore`, `MockInMemoryVectorStore`; `get_vector_store()` picks one from `VECTOR_DB_TYPE`.
 - **Graceful degradation:** each external dependency has a fallback (Celery → BackgroundTasks, Pinecone/pgvector → mock, embeddings API → hash vectors, LLM → deterministic spec).
 - **Module-level singletons:** `settings`, `vector_store`, `retriever`, `rag_engine`, `embedding_service`, `storage_service`.
@@ -92,7 +92,9 @@ User 1─* Project 1─* Document 1─* DocumentChunk
   `PresentationStatus` (PENDING, GENERATING, COMPLETED, FAILED),
   `JobStatus` (QUEUED, RETRIEVING_DOCUMENTS, GENERATING_OUTLINE, GENERATING_SLIDE_CONTENT, RENDERING_PRESENTATION, VALIDATING_SLIDES, COMPLETED, FAILED).
 - `PresentationSlide.content_json` stores the slide spec dict; `citations_json` stores its citations.
-- The schema is created by `create_all` at startup. Changing a column on an existing DB needs a manual migration (Alembic is installed but not set up).
+- The schema is managed by Alembic (`backend/migrations`, `0001` baseline, `0002` presentation audience/tone/language).
+  On startup `run_migrations()` upgrades to head. A database created by the old `create_all` (tables, no `alembic_version`)
+  is stamped at `0001` first. `tests/test_migrations.py` asserts the models equal the migrated schema.
 
 ## 5. Layout engine contract (`presentation/layout_engine.py`)
 
@@ -111,9 +113,23 @@ All settings are in `core/config.py` and read from `backend/.env`. The important
 the provider API keys, `EMBEDDING_MODEL`, `SECRET_KEY`, and `STORAGE_DIR`. The frontend uses `NEXT_PUBLIC_API_URL`.
 
 LLM models: `DEFAULT_MODELS` in `rag/graph.py` (claude-sonnet-5 / gpt-4o / gemini-2.5-flash), overridable with `LLM_MODEL`.
+Placeholder key values (`your_…`, `…_here`, blank) are treated as unset by `Settings`.
+
+**Embeddings (D-015):** `EMBEDDING_PROVIDER=auto` resolves once at startup (OpenAI key → `text-embedding-3-small`, else Google key →
+`gemini-embedding-001` with document/query task types, else hash vectors). Output size is `EMBEDDING_DIMENSION` (default 1536) for
+both providers and is checked against the Pinecone index on startup. A failing provider raises `EmbeddingError` (document →
+`FAILED` with the reason); it never silently switches models. With hash vectors, retrieval is keyword-only over a wider pool.
+
+**Vector deletes:** documents are deleted by their stored `DocumentChunk.vector_id`s (works on every Pinecone index type), and
+projects by deleting the Pinecone namespace / pgvector rows.
+
+**Security:** `SECRET_KEY` must be set unless `ENVIRONMENT=development`. CORS allows only `CORS_ORIGINS`.
+
 Dispatch pings Redis first (≈2 s) and falls back to BackgroundTasks immediately when it's down. If Redis is up but no worker is running, jobs wait in the queue until the 10-min stale timeout.
-Embeddings are fixed at 1536 dimensions, which matches OpenAI `text-embedding-3-small`.
-Google `text-embedding-004` returns 768 dimensions and will not fit the same index.
+
+**Docker:** `docker-compose.yml` loads `backend/.env` into the API and worker, overrides the infrastructure URLs, and shares
+the `storage_data` volume between them. The frontend image uses Next's `output: "standalone"`, with `NEXT_PUBLIC_API_URL` as a build arg.
+`.dockerignore` files keep `.env`, `.venv`, `storage/` and `node_modules` out of images.
 
 ## 7. Frontend layout (`frontend/src/`)
 

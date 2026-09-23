@@ -7,8 +7,8 @@ import Navbar from "@/components/Navbar";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "AI RAG PowerPoint Generator | Autonomous Slide Builder",
-  description: "Production-Ready AI RAG PowerPoint Generator & Autonomous Agent Workflows",
+  title: "Clarion | Document-grounded slide decks",
+  description: "Clarion turns your documents into cited, well-laid-out PowerPoint decks.",
 };
 
 export default function RootLayout({

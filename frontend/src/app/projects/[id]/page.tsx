@@ -1,13 +1,13 @@
 "use client";
 
-import { useState, use } from "react";
+import { useState, use, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadPresentation } from "@/lib/api";
 import ConfirmDialog from "@/components/ConfirmDialog";
-import { apiErrorDetail, type GenerationProgress, type Presentation as Deck, type ProjectDocument } from "@/lib/types";
-import { useDropzone } from "react-dropzone";
+import { apiErrorDetail, type GenerationProgress, type Presentation as Deck, type Project, type ProjectDocument } from "@/lib/types";
+import { useDropzone, type FileRejection } from "react-dropzone";
 import {
   FileText,
   UploadCloud,
@@ -20,7 +20,9 @@ import {
   Clock,
   Download,
   Eye,
-  ArrowLeft
+  ArrowLeft,
+  Pencil,
+  X
 } from "lucide-react";
 
 export default function ProjectDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -36,14 +38,18 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [numSlides, setNumSlides] = useState(10);
   const [audience, setAudience] = useState("Senior Management");
   const [theme, setTheme] = useState("Professional");
-  const [generationJob, setGenerationJob] = useState<GenerationProgress | null>(null);
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generationError, setGenerationError] = useState<string | null>(null);
+  const [tone, setTone] = useState("Professional & Informative");
+  const [language, setLanguage] = useState("English");
+  // The deck whose generation is being tracked; its progress is polled by the query below
+  const [activeDeckId, setActiveDeckId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
+  const [uploadErrors, setUploadErrors] = useState<string[]>([]);
+  const [editing, setEditing] = useState<{ name: string; description: string } | null>(null);
   const [presentationToDelete, setPresentationToDelete] = useState<{ id: string; title: string } | null>(null);
   const [documentToDelete, setDocumentToDelete] = useState<{ id: string; filename: string } | null>(null);
 
   // Queries
-  const { data: project } = useQuery({
+  const { data: project } = useQuery<Project>({
     queryKey: ["project", projectId],
     queryFn: async () => (await api.get(`/projects/${projectId}`)).data,
   });
@@ -78,8 +84,14 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     },
   });
 
-  const onDrop = (acceptedFiles: File[]) => {
-    acceptedFiles.forEach((file) => uploadMutation.mutate(file));
+  const onDrop = (acceptedFiles: File[], rejections: FileRejection[]) => {
+    setUploadErrors(rejections.map((r) => `${r.file.name}: unsupported file type`));
+    acceptedFiles.forEach((file) =>
+      uploadMutation.mutate(file, {
+        onError: (err) =>
+          setUploadErrors((prev) => [...prev, `${file.name}: ${apiErrorDetail(err, "upload failed")}`]),
+      })
+    );
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -98,48 +110,64 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   // Generate PPT Mutation
   const generateMutation = useMutation({
     mutationFn: async () => {
-      const res = await api.post(`/projects/${projectId}/presentations/generate`, {
+      const res = await api.post<GenerationProgress>(`/projects/${projectId}/presentations/generate`, {
         prompt,
         num_slides: numSlides,
         audience,
         theme,
+        tone,
+        language,
       });
       return res.data;
     },
-    onMutate: () => setGenerationError(null),
+    onMutate: () => setStartError(null),
     onError: (err) => {
-      setGenerationError(apiErrorDetail(err, "Could not start generation. Is the backend running?"));
+      setStartError(apiErrorDetail(err, "Could not start generation. Is the backend running?"));
     },
     onSuccess: (data) => {
-      setGenerationJob(data);
-      setIsGenerating(true);
-      pollGenerationStatus(data.presentation_id);
+      queryClient.setQueryData(["progress", data.presentation_id], data);
+      setActiveDeckId(data.presentation_id);
     },
   });
 
-  const pollGenerationStatus = (presentationId: string) => {
-    const interval = setInterval(async () => {
-      try {
-        const res = await api.get(`/presentations/${presentationId}/progress`);
-        setGenerationJob(res.data);
-        if (res.data.status === "COMPLETED") {
-          clearInterval(interval);
-          setIsGenerating(false);
-          refetchPresentations();
-          router.push(`/presentations/${presentationId}`);
-        } else if (res.data.status === "FAILED") {
-          clearInterval(interval);
-          setIsGenerating(false);
-          setGenerationError(res.data.error_message || "Presentation generation failed.");
-          refetchPresentations();
-        }
-      } catch {
-        clearInterval(interval);
-        setIsGenerating(false);
-        setGenerationError("Lost connection to the server while generating.");
-      }
-    }, 2000);
-  };
+  // Progress polling stops by itself on COMPLETED/FAILED, and when the page unmounts
+  const progressQuery = useQuery<GenerationProgress>({
+    queryKey: ["progress", activeDeckId],
+    queryFn: async () => (await api.get(`/presentations/${activeDeckId}/progress`)).data,
+    enabled: activeDeckId !== null,
+    refetchInterval: (query) =>
+      ["COMPLETED", "FAILED"].includes(query.state.data?.status ?? "") ? false : 2000,
+    retry: 2,
+  });
+  const progress = progressQuery.data;
+  const isGenerating =
+    generateMutation.isPending ||
+    (activeDeckId !== null && !progressQuery.isError && !["COMPLETED", "FAILED"].includes(progress?.status ?? ""));
+  const generationError =
+    startError ??
+    (progress?.status === "FAILED" ? progress.error_message || "Presentation generation failed." : null) ??
+    (progressQuery.isError ? "Lost connection to the server while generating." : null);
+
+  useEffect(() => {
+    if (progress?.status === "COMPLETED" && activeDeckId) {
+      queryClient.invalidateQueries({ queryKey: ["presentations", projectId] });
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      router.push(`/presentations/${activeDeckId}`);
+    } else if (progress?.status === "FAILED") {
+      queryClient.invalidateQueries({ queryKey: ["presentations", projectId] });
+    }
+  }, [progress?.status, activeDeckId, projectId, queryClient, router]);
+
+  // Edit project name/description
+  const updateProjectMutation = useMutation({
+    mutationFn: async (body: { name: string; description: string }) =>
+      (await api.patch<Project>(`/projects/${projectId}`, body)).data,
+    onSuccess: (data) => {
+      queryClient.setQueryData(["project", projectId], data);
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setEditing(null);
+    },
+  });
 
   // Delete presentation
   const deletePresentationMutation = useMutation({
@@ -193,9 +221,25 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             <span>/</span>
             <span>{project?.name || "Workspace"}</span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
-            {project?.name}
-          </h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+              {project?.name}
+            </h1>
+            {project && (
+              <button
+                type="button"
+                onClick={() => {
+                  updateProjectMutation.reset();
+                  setEditing({ name: project.name, description: project.description ?? "" });
+                }}
+                className="p-1.5 rounded-lg text-slate-400 dark:text-zinc-500 hover:text-emerald-700 dark:hover:text-emerald-400 hover:bg-stone-100 dark:hover:bg-zinc-900 transition"
+                title="Edit project"
+                aria-label="Edit project name and description"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
+          </div>
           <p className="text-slate-500 dark:text-zinc-400 text-sm mt-1">
             {project?.description || "Document RAG Knowledge Base Workspace"}
           </p>
@@ -266,6 +310,25 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               Browse Files
             </button>
           </div>
+
+          {uploadErrors.length > 0 && (
+            <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 p-4 rounded-xl flex items-start gap-2 text-xs text-red-700 dark:text-red-300">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <ul className="flex-1 space-y-1">
+                {uploadErrors.map((e, i) => (
+                  <li key={i}>{e}</li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                onClick={() => setUploadErrors([])}
+                className="text-red-500 hover:text-red-700 dark:hover:text-red-200"
+                aria-label="Dismiss upload errors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
           {/* Ingested Documents List */}
           <div>
@@ -410,24 +473,52 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                   <option value="Minimal">Minimal (Clean Light)</option>
                   <option value="Dark">Dark Obsidian</option>
                   <option value="Corporate">Corporate Blue</option>
+                  <option value="Modern">Modern</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-zinc-300 mb-1">Tone</label>
+                <select
+                  value={tone}
+                  onChange={(e) => setTone(e.target.value)}
+                  className="w-full bg-stone-50 dark:bg-zinc-950 border border-stone-300 dark:border-zinc-800 rounded-lg px-3 py-2 text-slate-900 dark:text-white text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="Professional & Informative">Professional &amp; Informative</option>
+                  <option value="Concise & Executive">Concise &amp; Executive</option>
+                  <option value="Persuasive">Persuasive</option>
+                  <option value="Neutral & Academic">Neutral &amp; Academic</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-zinc-300 mb-1">Slide Language</label>
+                <select
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
+                  className="w-full bg-stone-50 dark:bg-zinc-950 border border-stone-300 dark:border-zinc-800 rounded-lg px-3 py-2 text-slate-900 dark:text-white text-xs font-medium focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  {["English", "Spanish", "French", "German", "Portuguese", "Italian", "Dutch", "Hindi", "Japanese", "Chinese"].map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
                 </select>
               </div>
             </div>
 
             {/* Progress Status Bar during generation */}
-            {isGenerating && generationJob && (
+            {isGenerating && progress && (
               <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 p-4 rounded-xl space-y-3">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-semibold text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
                     <Clock className="w-4 h-4 animate-spin text-emerald-600 dark:text-emerald-400" />
-                    {generationJob.current_step}
+                    {progress.current_step}
                   </span>
-                  <span className="font-mono text-emerald-700 dark:text-emerald-400 font-bold">{generationJob.progress}%</span>
+                  <span className="font-mono text-emerald-700 dark:text-emerald-400 font-bold">{progress.progress}%</span>
                 </div>
                 <div className="w-full bg-stone-200 dark:bg-zinc-900 rounded-full h-2 overflow-hidden">
                   <div
                     className="bg-emerald-600 dark:bg-emerald-400 h-2 transition-all duration-300 rounded-full"
-                    style={{ width: `${generationJob.progress}%` }}
+                    style={{ width: `${progress.progress}%` }}
                   />
                 </div>
               </div>
@@ -537,6 +628,67 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Edit Project Modal */}
+      {editing && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#0d120f] border border-stone-200 dark:border-zinc-800 max-w-md w-full p-6 rounded-2xl shadow-2xl space-y-4">
+            <h3 className="text-xl font-bold text-slate-900 dark:text-white">Edit Project</h3>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                updateProjectMutation.mutate(editing);
+              }}
+              className="space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-zinc-300 mb-1">
+                  Project Name
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editing.name}
+                  onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+                  className="w-full bg-stone-50 dark:bg-zinc-950 border border-stone-300 dark:border-zinc-800 rounded-xl px-3.5 py-2.5 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700 dark:text-zinc-300 mb-1">
+                  Description (Optional)
+                </label>
+                <textarea
+                  rows={3}
+                  value={editing.description}
+                  onChange={(e) => setEditing({ ...editing, description: e.target.value })}
+                  className="w-full bg-stone-50 dark:bg-zinc-950 border border-stone-300 dark:border-zinc-800 rounded-xl px-3.5 py-2.5 text-slate-900 dark:text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+              {updateProjectMutation.isError && (
+                <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 p-3 rounded-xl text-xs text-red-700 dark:text-red-300">
+                  {apiErrorDetail(updateProjectMutation.error, "Could not save the project. Please try again.")}
+                </div>
+              )}
+              <div className="flex items-center justify-end space-x-3 pt-4 border-t border-stone-200 dark:border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setEditing(null)}
+                  className="px-4 py-2 text-slate-500 dark:text-zinc-400 hover:text-slate-800 dark:hover:text-zinc-200 text-sm font-medium transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={updateProjectMutation.isPending || !editing.name.trim()}
+                  className="px-5 py-2 bg-[#055a44] hover:bg-[#044836] text-white text-sm font-semibold rounded-xl transition disabled:opacity-50 shadow-xs"
+                >
+                  {updateProjectMutation.isPending ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

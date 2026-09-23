@@ -307,7 +307,8 @@ Return the complete corrected JSON object only."""
     # ------------------------------------------------------------------ single-slide regeneration
 
     def regenerate_slide(self, project_id: str, deck_prompt: str, current: Dict[str, Any],
-                         instructions: Optional[str] = None, audience: str = "General") -> SlideSpec:
+                         instructions: Optional[str] = None, audience: str = "General",
+                         tone: str = "Professional & Informative", language: str = "English") -> SlideSpec:
         """Rewrites one slide, keeping its type, grounded and fact-checked like a full deck."""
         slide_type = current.get("type", "bullet")
         slide_cls = SLIDE_SPEC_CLASSES.get(slide_type, SLIDE_SPEC_CLASSES["bullet"])
@@ -328,6 +329,8 @@ Return the complete corrected JSON object only."""
         shape = SLIDE_TYPE_SCHEMAS.get(slide_type, SLIDE_TYPE_SCHEMAS["bullet"])[:-1].rstrip()
         prompt = f"""You are revising ONE slide of a presentation about: {deck_prompt}
 AUDIENCE: {audience}
+TONE: {tone}
+LANGUAGE: write all slide text in {language} (the rest of the deck is in {language}).
 CURRENT SLIDE: {current_json}
 USER INSTRUCTIONS: {instructions or "Improve this slide with the most relevant facts from the sources."}
 

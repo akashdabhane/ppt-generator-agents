@@ -1,4 +1,4 @@
-# PRD: AI RAG PowerPoint Generator ("AI SlideRAG")
+# PRD: Clarion, an AI RAG PowerPoint generator
 
 _Last updated: 2026-09-23 (feature table re-audited against the code). Drafted from the code and README, then confirmed against the project owner's
 handoff summary from their previous agent (Anti-Gravity). The **Success metrics** in §7 are still proposals._

@@ -13,7 +13,8 @@ import {
   ChevronLeft,
   ChevronRight,
   BarChart3,
-  CheckCircle2
+  CheckCircle2,
+  ShieldCheck
 } from "lucide-react";
 
 export default function PresentationPreviewPage({ params }: { params: Promise<{ id: string }> }) {
@@ -97,6 +98,17 @@ export default function PresentationPreviewPage({ params }: { params: Promise<{ 
           </button>
         </div>
       </div>
+
+      {/* Grounding summary: every figure was checked against the cited sources */}
+      {presentation?.generation_summary && (
+        <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 px-4 py-3 rounded-xl flex items-start gap-2 text-xs text-emerald-800 dark:text-emerald-300">
+          <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>
+            <span className="font-semibold">Fact-checked against your documents:</span> {presentation.generation_summary}.
+            Claims that no source supported were removed.
+          </span>
+        </div>
+      )}
 
       {/* Main Slide Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">

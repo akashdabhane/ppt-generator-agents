@@ -28,7 +28,7 @@ def test_delete_project_removes_rows_files_and_vectors(api_env):
     assert api_env["db"].get(Document, doc_id) is None
     assert not os.path.exists(path)
     assert not os.path.exists(os.path.join(api_env["storage"].base_dir, "projects", project_id))
-    assert api_env["vectors"].deleted == [(project_id, doc_id)]
+    assert api_env["vectors"].deleted == [(project_id, "*")]
 
 
 def test_delete_project_of_another_user_is_404(api_env):
@@ -42,3 +42,20 @@ def test_delete_project_of_another_user_is_404(api_env):
     assert api_env["db"].get(Project, project_id) is not None
     assert os.path.exists(path)
     assert api_env["vectors"].deleted == []
+
+
+def test_update_project_name_and_description(api_env):
+    project_id, _, _ = _make_project_with_doc(api_env)
+    client = api_env["client"]
+
+    res = client.patch(f"/projects/{project_id}", json={"name": "  Q3 Board Pack ", "description": "For the board"})
+    assert res.status_code == 200
+    assert res.json()["name"] == "Q3 Board Pack"
+    assert res.json()["description"] == "For the board"
+    assert res.json()["document_count"] == 1
+
+    assert client.patch(f"/projects/{project_id}", json={"description": ""}).json()["description"] is None
+    assert client.patch(f"/projects/{project_id}", json={"name": "  "}).status_code == 400
+
+    api_env["current"]["user"] = api_env["other"]
+    assert client.patch(f"/projects/{project_id}", json={"name": "hijack"}).status_code == 404

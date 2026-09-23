@@ -27,8 +27,13 @@ class BaseVectorStore(ABC):
         pass
 
     @abstractmethod
-    def delete_document_chunks(self, project_id: str, document_id: str) -> None:
-        """Delete vector records associated with a specific document."""
+    def delete_document_chunks(self, project_id: str, document_id: str, vector_ids: Optional[List[str]] = None) -> None:
+        """Delete a document's vectors. `vector_ids` (from DocumentChunk.vector_id) make the delete exact."""
+        pass
+
+    @abstractmethod
+    def delete_project(self, project_id: str) -> None:
+        """Delete every vector of a project."""
         pass
 
 
@@ -81,12 +86,15 @@ class MockInMemoryVectorStore(BaseVectorStore):
         results.sort(key=lambda x: x["score"], reverse=True)
         return results[:top_k]
 
-    def delete_document_chunks(self, project_id: str, document_id: str) -> None:
+    def delete_document_chunks(self, project_id: str, document_id: str, vector_ids: Optional[List[str]] = None) -> None:
         if project_id in self.store:
             self.store[project_id] = [
                 c for c in self.store[project_id]
                 if c.get("document_id") != document_id
             ]
+
+    def delete_project(self, project_id: str) -> None:
+        self.store.pop(project_id, None)
 
 
 class PineconeVectorStore(BaseVectorStore):
@@ -95,8 +103,11 @@ class PineconeVectorStore(BaseVectorStore):
     Uses Pinecone Python Client for managed vector search.
     Requires PINECONE_API_KEY and PINECONE_INDEX_NAME in environment.
     """
+    DELETE_BATCH = 1000
+
     def __init__(self):
         self._initialized = False
+        self._config_error: Optional[str] = None
         self.index = None
         if not settings.PINECONE_API_KEY:
             logger.warning("PINECONE_API_KEY is not set. Falling back to MockInMemoryVectorStore.")
@@ -114,7 +125,7 @@ class PineconeVectorStore(BaseVectorStore):
                 try:
                     pc.create_index(
                         name=index_name,
-                        dimension=1536,
+                        dimension=settings.EMBEDDING_DIMENSION,
                         metric="cosine",
                         spec=ServerlessSpec(cloud="aws", region="us-east-1")
                     )
@@ -123,6 +134,16 @@ class PineconeVectorStore(BaseVectorStore):
 
             self.index = pc.Index(index_name)
             self._initialized = True
+            try:
+                index_dim = pc.describe_index(index_name).dimension
+                if index_dim and index_dim != settings.EMBEDDING_DIMENSION:
+                    self._config_error = (
+                        f"Pinecone index '{index_name}' has {index_dim} dimensions but EMBEDDING_DIMENSION is "
+                        f"{settings.EMBEDDING_DIMENSION}. Set EMBEDDING_DIMENSION={index_dim} or use a new index name."
+                    )
+                    logger.error(self._config_error)
+            except Exception as e:
+                logger.warning(f"Could not read Pinecone index dimension ({e}).")
         except Exception as e:
             logger.warning(f"Failed to initialize Pinecone client ({e}). Using MockInMemoryVectorStore fallback.")
             self._mock_store = MockInMemoryVectorStore()
@@ -141,9 +162,14 @@ class PineconeVectorStore(BaseVectorStore):
                 clean[key] = value
         return clean
 
+    def _check_config(self):
+        if self._config_error:
+            raise ValueError(self._config_error)
+
     def upsert_chunks(self, project_id: str, chunks: List[Dict[str, Any]]) -> List[str]:
         if not self._initialized or not self.index:
             return self._mock_store.upsert_chunks(project_id, chunks)
+        self._check_config()
 
         texts = [c["content"] for c in chunks]
         embeddings = embedding_service.get_embeddings(texts)
@@ -181,6 +207,7 @@ class PineconeVectorStore(BaseVectorStore):
     ) -> List[Dict[str, Any]]:
         if not self._initialized or not self.index:
             return self._mock_store.similarity_search(project_id, query, top_k, filter_dict)
+        self._check_config()
 
         query_vec = embedding_service.get_embedding(query)
         
@@ -204,18 +231,30 @@ class PineconeVectorStore(BaseVectorStore):
             })
         return results
 
-    def delete_document_chunks(self, project_id: str, document_id: str) -> None:
+    def delete_document_chunks(self, project_id: str, document_id: str, vector_ids: Optional[List[str]] = None) -> None:
         if not self._initialized or not self.index:
             self._mock_store.delete_document_chunks(project_id, document_id)
             return
 
         try:
-            self.index.delete(
-                namespace=project_id,
-                filter={"document_id": document_id}
-            )
+            if vector_ids:
+                # Delete by ID works on every index type (metadata-filter deletes are not supported everywhere)
+                for i in range(0, len(vector_ids), self.DELETE_BATCH):
+                    self.index.delete(ids=vector_ids[i:i + self.DELETE_BATCH], namespace=project_id)
+            else:
+                self.index.delete(namespace=project_id, filter={"document_id": document_id})
         except Exception as e:
             logger.error(f"Error deleting chunks from Pinecone namespace {project_id}: {e}")
+
+    def delete_project(self, project_id: str) -> None:
+        if not self._initialized or not self.index:
+            self._mock_store.delete_project(project_id)
+            return
+        try:
+            self.index.delete(delete_all=True, namespace=project_id)
+        except Exception as e:
+            # Deleting a namespace that was never written to raises "not found"; nothing to clean up then
+            logger.warning(f"Could not delete Pinecone namespace {project_id}: {e}")
 
 
 class PGVectorStore(BaseVectorStore):
@@ -237,13 +276,13 @@ class PGVectorStore(BaseVectorStore):
             self.engine = create_engine(self.db_url)
             with self.engine.connect() as conn:
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
-                conn.execute(text("""
+                conn.execute(text(f"""
                     CREATE TABLE IF NOT EXISTS pgvector_embeddings (
                         id VARCHAR(36) PRIMARY KEY,
                         project_id VARCHAR(255) NOT NULL,
                         document_id VARCHAR(255),
                         content TEXT NOT NULL,
-                        embedding vector(1536),
+                        embedding vector({settings.EMBEDDING_DIMENSION}),
                         metadata_json JSONB,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
@@ -276,7 +315,8 @@ class PGVectorStore(BaseVectorStore):
                 conn.execute(
                     text("""
                         INSERT INTO pgvector_embeddings (id, project_id, document_id, content, embedding, metadata_json)
-                        VALUES (:id, :project_id, :document_id, :content, :embedding::vector, :metadata_json::jsonb)
+                        VALUES (:id, :project_id, :document_id, :content, CAST(:embedding AS vector),
+                                CAST(:metadata_json AS jsonb))
                     """),
                     {
                         "id": v_id,
@@ -307,10 +347,10 @@ class PGVectorStore(BaseVectorStore):
 
         with self.engine.connect() as conn:
             stmt = text("""
-                SELECT id, content, metadata_json, 1 - (embedding <=> :query_vec::vector) AS score
+                SELECT id, content, metadata_json, 1 - (embedding <=> CAST(:query_vec AS vector)) AS score
                 FROM pgvector_embeddings
                 WHERE project_id = :project_id
-                ORDER BY embedding <=> :query_vec::vector ASC
+                ORDER BY embedding <=> CAST(:query_vec AS vector) ASC
                 LIMIT :top_k
             """)
             rows = conn.execute(stmt, {
@@ -330,7 +370,7 @@ class PGVectorStore(BaseVectorStore):
             })
         return results
 
-    def delete_document_chunks(self, project_id: str, document_id: str) -> None:
+    def delete_document_chunks(self, project_id: str, document_id: str, vector_ids: Optional[List[str]] = None) -> None:
         if not self._initialized:
             self._mock_store.delete_document_chunks(project_id, document_id)
             return
@@ -342,6 +382,18 @@ class PGVectorStore(BaseVectorStore):
                 {"project_id": project_id, "document_id": document_id}
             )
             conn.commit()
+
+    def delete_project(self, project_id: str) -> None:
+        if not self._initialized:
+            self._mock_store.delete_project(project_id)
+            return
+
+        from sqlalchemy import text
+        with self.engine.connect() as conn:
+            conn.execute(text("DELETE FROM pgvector_embeddings WHERE project_id = :project_id"), {"project_id": project_id})
+            conn.commit()
+
+
 def get_vector_store() -> BaseVectorStore:
     """Factory function to instantiate vector store based on VECTOR_DB_TYPE config setting."""
     db_type = settings.VECTOR_DB_TYPE.lower() if settings.VECTOR_DB_TYPE else "pinecone"

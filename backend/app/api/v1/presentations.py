@@ -6,8 +6,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 
-from app.api.v1.deps import get_db, get_current_user
-from app.models.user import User
+from app.api.v1.deps import get_db, get_owned_project, get_owned_presentation
 from app.models.project import Project
 from app.models.document import Document, DocumentStatus
 from app.models.presentation import Presentation, PresentationStatus
@@ -36,13 +35,9 @@ def generate_presentation(
     project_id: str,
     req: PresentationGenerateRequest,
     background_tasks: BackgroundTasks,
-    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_owned_project),
     db: Session = Depends(get_db)
 ):
-    project = db.get(Project, project_id)
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Project not found")
-
     # Grounding: without indexed documents the deck could only be invented
     indexed = db.execute(
         select(func.count(Document.id))
@@ -61,6 +56,9 @@ def generate_presentation(
         title=req.prompt[:50].title(),
         prompt=req.prompt,
         theme=req.theme,
+        audience=req.audience or "General",
+        tone=req.tone or "Professional & Informative",
+        language=req.language or "English",
         status=PresentationStatus.PENDING
     )
     db.add(pres)
@@ -101,13 +99,9 @@ def generate_presentation(
 @router.get("/projects/{project_id}/presentations", response_model=List[PresentationResponse])
 def list_presentations(
     project_id: str,
-    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_owned_project),
     db: Session = Depends(get_db)
 ):
-    project = db.get(Project, project_id)
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Project not found")
-
     result = db.execute(
         select(Presentation)
         .where(Presentation.project_id == project_id)
@@ -133,14 +127,9 @@ def list_presentations(
 @router.get("/presentations/{presentation_id}", response_model=PresentationResponse)
 def get_presentation(
     presentation_id: str,
-    current_user: User = Depends(get_current_user),
+    pres: Presentation = Depends(get_owned_presentation),
     db: Session = Depends(get_db)
 ):
-    pres = db.get(Presentation, presentation_id)
-    project = db.get(Project, pres.project_id) if pres else None
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Presentation not found")
-
     slides_res = db.execute(
         select(PresentationSlide)
         .where(PresentationSlide.presentation_id == pres.id)
@@ -150,20 +139,22 @@ def get_presentation(
 
     p_dict = PresentationResponse.model_validate(pres)
     p_dict.slides = [SlideResponse.model_validate(s) for s in slides]
+    job = db.execute(
+        select(GenerationJob)
+        .where(GenerationJob.presentation_id == pres.id)
+        .order_by(GenerationJob.started_at.desc())
+    ).scalars().first()
+    if job and job.status == JobStatus.COMPLETED and job.current_step_description:
+        p_dict.generation_summary = job.current_step_description.removeprefix("Complete: ")
     return p_dict
 
 
 @router.get("/presentations/{presentation_id}/progress")
 def get_presentation_progress(
     presentation_id: str,
-    current_user: User = Depends(get_current_user),
+    pres: Presentation = Depends(get_owned_presentation),
     db: Session = Depends(get_db)
 ):
-    pres = db.get(Presentation, presentation_id)
-    project = db.get(Project, pres.project_id) if pres else None
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Presentation not found")
-
     result = db.execute(
         select(GenerationJob)
         .where(GenerationJob.presentation_id == presentation_id)
@@ -197,13 +188,9 @@ def get_presentation_progress(
 @router.get("/presentations/{presentation_id}/download")
 def download_presentation(
     presentation_id: str,
-    current_user: User = Depends(get_current_user),
+    pres: Presentation = Depends(get_owned_presentation),
     db: Session = Depends(get_db)
 ):
-    pres = db.get(Presentation, presentation_id)
-    project = db.get(Project, pres.project_id) if pres else None
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Presentation not found")
     if not pres.pptx_path or not os.path.exists(pres.pptx_path):
         raise HTTPException(status_code=404, detail="PPTX file not found or generation incomplete")
 
@@ -220,13 +207,9 @@ def regenerate_single_slide(
     presentation_id: str,
     slide_number: int,
     req: SlideRegenerateRequest,
-    current_user: User = Depends(get_current_user),
+    pres: Presentation = Depends(get_owned_presentation),
     db: Session = Depends(get_db)
 ):
-    pres = db.get(Presentation, presentation_id)
-    project = db.get(Project, pres.project_id) if pres else None
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Presentation not found")
     if pres.status != PresentationStatus.COMPLETED:
         raise HTTPException(status_code=409, detail="Only a completed presentation can have slides regenerated.")
 
@@ -245,6 +228,9 @@ def regenerate_single_slide(
             deck_prompt=pres.prompt,
             current=slide.content_json,
             instructions=req.instructions,
+            audience=pres.audience or "General",
+            tone=pres.tone or "Professional & Informative",
+            language=pres.language or "English",
         )
     except (NoGroundingContextError, SlideRegenerationUnavailable) as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -268,14 +254,9 @@ def regenerate_single_slide(
 @router.delete("/presentations/{presentation_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_presentation(
     presentation_id: str,
-    current_user: User = Depends(get_current_user),
+    pres: Presentation = Depends(get_owned_presentation),
     db: Session = Depends(get_db)
 ):
-    pres = db.get(Presentation, presentation_id)
-    project = db.get(Project, pres.project_id) if pres else None
-    if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=404, detail="Presentation not found")
-
     # The worker writes to this row and the .pptx while generating; a stale job may be deleted.
     if (
         pres.status in (PresentationStatus.PENDING, PresentationStatus.GENERATING)

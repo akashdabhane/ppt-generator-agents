@@ -94,3 +94,25 @@ def test_regenerate_other_users_deck_is_404(api_env, no_llm):
     api_env["db"].expire_all()
     slide = api_env["db"].query(PresentationSlide).filter_by(presentation_id=pres_id, slide_number=2).one()
     assert slide.content_json["bullets"] == ["old bullet"]
+
+
+def test_regenerate_uses_the_decks_saved_language_and_audience(api_env, monkeypatch):
+    monkeypatch.setattr(graph.retriever, "retrieve", lambda *a, **k: CONTEXTS)
+    prompts = []
+    llm_slide = {"type": "bullet", "title": "Umsatz", "bullets": ["Der Umsatz wuchs um 12%"], "sources": ["S1"]}
+
+    def invoke(prompt):
+        prompts.append(prompt)
+        return SimpleNamespace(content=json.dumps(llm_slide))
+
+    monkeypatch.setattr(rag_engine, "_get_llm", lambda: SimpleNamespace(invoke=invoke))
+    pres_id, _ = _deck(api_env, SLIDES)
+    pres = api_env["db"].get(Presentation, pres_id)
+    pres.language, pres.audience = "German", "Investors"
+    api_env["db"].commit()
+
+    res = api_env["client"].post(f"/presentations/{pres_id}/slides/2/regenerate", json={})
+
+    assert res.status_code == 200, res.text
+    assert "in German" in prompts[0] and "AUDIENCE: Investors" in prompts[0]
+    assert res.json()["content_json"]["bullets"] == ["Der Umsatz wuchs um 12%"]

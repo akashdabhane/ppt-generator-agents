@@ -23,7 +23,7 @@ Passwords are hashed with PBKDF2-SHA256 (100k iterations, 16-byte salt), stored 
 | GET | `/projects/{project_id}` | — | `ProjectResponse` |
 | DELETE | `/projects/{project_id}` | — | 204 (cascades DB rows; also deletes the project's vectors and its storage folder of uploads + decks) |
 
-`ProjectUpdate` exists as a schema, but there is no PATCH route.
+| PATCH | `/projects/{project_id}` | `{name?, description?}` | `ProjectResponse` (400 on an empty name; empty description → null) |
 
 ## Documents — `api/v1/documents.py`
 
@@ -43,7 +43,7 @@ Allowed extensions: `.pdf .docx .pptx .txt .csv .xlsx .xls .md .markdown`. Anyth
 |---|---|---|---|
 | POST | `/projects/{project_id}/presentations/generate` | `PresentationGenerateRequest` | `GenerationProgressResponse`. 400 if the project has no `INDEXED` document |
 | GET | `/projects/{project_id}/presentations` | — | `PresentationResponse[]` (newest first, with slides) |
-| GET | `/presentations/{id}` | — | `PresentationResponse` (404 for non-owners) |
+| GET | `/presentations/{id}` | — | `PresentationResponse` (404 for non-owners). Includes `audience`, `tone`, `language` and `generation_summary` (fact-check result) |
 | GET | `/presentations/{id}/progress` | — | `GenerationProgressResponse` (latest job) |
 | GET | `/presentations/{id}/download` | — | `.pptx` file |
 | POST | `/presentations/{id}/slides/{slide_number}/regenerate` | `{instructions?}` | `SlideResponse`. Keeps the slide's type and re-renders the `.pptx`. 404 non-owner, 409 unless `COMPLETED`, 400 when nothing is retrieved or (without an LLM) the type can't be built from excerpts |

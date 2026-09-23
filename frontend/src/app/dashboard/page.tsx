@@ -5,16 +5,9 @@ import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import type { Project } from "@/lib/types";
 import { FolderPlus, Folder, FileText, Presentation, Plus, ArrowRight, Sparkles, Trash2 } from "lucide-react";
 
-interface Project {
-  id: string;
-  name: string;
-  description: string;
-  document_count: number;
-  presentation_count: number;
-  created_at: string;
-}
 
 export default function DashboardPage() {
   const queryClient = useQueryClient();

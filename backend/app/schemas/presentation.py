@@ -36,11 +36,16 @@ class PresentationResponse(BaseModel):
     title: str
     prompt: str
     theme: str
+    audience: Optional[str] = None
+    tone: Optional[str] = None
+    language: Optional[str] = None
     status: PresentationStatus
     pptx_path: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     slides: List[SlideResponse] = []
+    # Fact-check result of the latest completed generation, e.g. "8/8 content slides cited · 1 unsupported claim(s) removed"
+    generation_summary: Optional[str] = None
 
     class Config:
         from_attributes = True

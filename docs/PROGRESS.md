@@ -4,6 +4,39 @@ Newest entry first. At the end of every session, add: **what changed · what's b
 
 ---
 
+## 2026-09-23: Renamed the app to "Clarion"
+
+Product name "AI SlideRAG" / "AI RAG PowerPoint Generator" → **Clarion** in the navbar, login heading, page `<title>`/description,
+backend `PROJECT_NAME`, root API message, README, PRD and CLAUDE.md headings. Deliberately unchanged: the repo folder name and
+`PINECONE_INDEX_NAME=ppt-generator-rag` (renaming it would point at a new, empty index). Nothing broken.
+
+## 2026-09-23: Full-project review: config, embeddings, security, Docker, migrations, open UX tasks
+
+Read all docs and the whole codebase, then fixed what blocked the PRD goals:
+- **Embeddings (D-015):** placeholder keys counted as real, and the provider could change per call (OpenAI → Google 768-dim → hash), so
+  vectors didn't match the 1536-dim index or each other. Now: one provider resolved at startup, fixed dimension, Gemini
+  `gemini-embedding-001` with task types, errors surface as FAILED documents, cross-provider `EMBEDDING_MODEL` ignored.
+  The local `.env` resolves to google/gemini-embedding-001 at 1536 dimensions. Hash vectors → keyword-only ranking over a wider pool.
+- **Vector store:** Pinecone index dimension checked on startup. Deletes by stored vector IDs, project delete clears the namespace.
+  **pgvector was broken:** `:param::vector` casts are never bound by SQLAlchemy; now `CAST(:param AS vector)`.
+- **Security:** `SECRET_KEY` required outside `ENVIRONMENT=development` (placeholders count as unset). CORS limited to `CORS_ORIGINS`.
+  All routes use the shared `get_owned_*` dependencies.
+- **Docker (P0 done):** UTF-8 `requirements.txt` with direct deps (backend image builds). `.dockerignore`s (the backend image would have
+  contained `.env` with live keys). Standalone Next build with a build-time `NEXT_PUBLIC_API_URL`. Compose shares storage between
+  API and worker, and loads `backend/.env`.
+- **Alembic (D-016):** baseline + `0002` (presentation audience/tone/language), run on startup, legacy DBs stamped. Regeneration now
+  uses the deck's saved language/audience/tone.
+- **API/UX:** `PATCH /projects/{id}` + edit modal. Tone/language pickers and the missing "Modern" theme. Upload errors shown.
+  Generation progress via a TanStack query (the old `setInterval` kept running after leaving the page). Fact-check summary on the preview.
+- Tests are hermetic (they used to build a real Pinecone client from `.env`). README rewritten to match the code.
+**Tests:** 74 passed (new: config/embeddings, migrations, PATCH, saved-language regeneration). Frontend: eslint, `tsc` and `next build` clean. Backend Docker image builds.
+**Not verified:** a live run with the real Gemini/Pinecone keys, and a browser pass. The next API start will stamp + migrate the local Postgres DB.
+**Action for the owner:** set `SECRET_KEY` in `backend/.env`, remove or fix `EMBEDDING_MODEL=text-embedding-3-small` (ignored with a warning),
+and **re-index existing documents** (their vectors were produced by the old mixed-provider code).
+**Resume here:** `TASKS.md` → P3 "Verify end to end with real keys".
+
+---
+
 ## 2026-09-23: Content accuracy of generated decks
 
 **Why:** the PRD's core promise is 100 % grounded content. Content was only as good as one unchecked LLM call over noisy retrieval.

@@ -1,3 +1,12 @@
+import os
+
+# Hermetic tests: never reach the real vector DB or LLM/embedding APIs configured in backend/.env.
+# Environment variables take precedence over the .env file in pydantic-settings.
+os.environ["VECTOR_DB_TYPE"] = "mock"
+for _key in ("PINECONE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+    os.environ[_key] = ""
+os.environ["EMBEDDING_PROVIDER"] = "hash"
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -26,10 +35,14 @@ class FakeVectorStore:
         self.store.setdefault(project_id, []).extend(chunks)
         return [f"v{i}" for i in range(len(chunks))]
 
-    def delete_document_chunks(self, project_id, document_id):
+    def delete_document_chunks(self, project_id, document_id, vector_ids=None):
         self.deleted.append((project_id, document_id))
         self.store[project_id] = [c for c in self.store.get(project_id, [])
                                   if c["metadata"]["document_id"] != document_id]
+
+    def delete_project(self, project_id):
+        self.deleted.append((project_id, "*"))
+        self.store.pop(project_id, None)
 
 
 @pytest.fixture

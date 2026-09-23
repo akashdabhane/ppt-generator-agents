@@ -1,0 +1,10 @@
+# Secrets and local state must never end up in the image
+.env
+.venv/
+venv/
+storage/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+*.log

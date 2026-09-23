@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -36,17 +34,18 @@ services:
     container_name: ppt_backend
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/ppt_generator_db
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/1
-      - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - VECTOR_DB_TYPE=pinecone
-      - PINECONE_API_KEY=${PINECONE_API_KEY}
-      - PINECONE_INDEX_NAME=${PINECONE_INDEX_NAME:-ppt-generator-rag}
-      - LLM_PROVIDER=anthropic
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    # API keys, LLM/embedding provider, SECRET_KEY etc. come from backend/.env (template: backend/.env.example)
+    env_file: ./backend/.env
+    environment: &container_env
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/ppt_generator_db
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      CORS_ORIGINS: http://localhost:3000
+      STORAGE_DIR: /app/storage
+    volumes:
+      # Shared with the worker: it writes uploads/decks that the API serves
+      - storage_data:/app/storage
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,31 +58,29 @@ services:
       dockerfile: Dockerfile
     container_name: ppt_worker
     command: celery -A app.workers.celery_app.celery_app worker --loglevel=info
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/ppt_generator_db
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/1
-      - CELERY_RESULT_BACKEND=redis://redis:6379/2
-      - VECTOR_DB_TYPE=pinecone
-      - PINECONE_API_KEY=${PINECONE_API_KEY}
-      - PINECONE_INDEX_NAME=${PINECONE_INDEX_NAME:-ppt-generator-rag}
-      - LLM_PROVIDER=anthropic
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file: ./backend/.env
+    environment: *container_env
+    volumes:
+      - storage_data:/app/storage
     depends_on:
-      - backend
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Inlined into the browser bundle at build time: the URL the *browser* uses to reach the API
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
     container_name: ppt_frontend
     ports:
       - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
     depends_on:
       - backend
 
 volumes:
   postgres_data:
+  storage_data:

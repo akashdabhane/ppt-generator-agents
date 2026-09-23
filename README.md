@@ -1,167 +1,107 @@
-# Production-Ready AI RAG-Based PowerPoint Generator
+# Clarion: document-grounded PowerPoint generator
 
-Full-stack production application where users upload documents (PDF, DOCX, XLSX, CSV, PPTX, TXT, Markdown), the system indexes them into a multi-query hybrid RAG pipeline, and users generate PowerPoint presentations (`.pptx`) via natural-language prompts.
+Upload your documents (PDF, DOCX, XLSX/CSV, PPTX, TXT, Markdown) into a project, describe the deck you need, and get an
+editable 16:9 `.pptx` in which **every figure is fact-checked against your documents and every slide cites its sources**.
+Layout is computed by code, so text and tables never overflow the slide.
 
----
-
-## Architectural Principle
-
-> **Core Architectural Rule**:
-> **RAG determines what information is relevant $\rightarrow$ The LLM determines the presentation content and structure (JSON specification only) $\rightarrow$ The Layout Engine determines exact dimensions, positioning, and table pagination $\rightarrow$ The PPT Renderer creates the final PowerPoint (`.pptx`).**
->
-> The LLM **NEVER** generates or controls slide layout, $x, y$ coordinates, widths, heights, font sizes, margins, or element positioning.
+Built for analysts, consultants, researchers and sales teams who work with private documents and need verifiable decks.
+Product details: [`docs/PRD.md`](docs/PRD.md).
 
 ---
 
-## System Architecture
+## The core rule
+
+> **RAG decides what is relevant → the LLM writes a JSON `PresentationSpec` (content only) → the `LayoutEngine` decides all
+> geometry → the `PresentationRenderer` writes the `.pptx`.**
+> The LLM never produces coordinates, sizes, fonts, colours or positioning.
+
+## How a deck is made
 
 ```mermaid
-flowchart TD
-    subgraph Client ["Frontend (Next.js 16 + React 19)"]
-        UI["User Interface / Prompts"]
-        Dropzone["Document Upload Dropzone"]
-        Viewer["Slide Deck & Citation Previewer"]
-    end
-
-    subgraph API ["Backend (FastAPI Python 3.12)"]
-        Router["API Route Controllers"]
-        Auth["JWT Auth Service"]
-        Storage["Storage Service"]
-    end
-
-    subgraph RAG ["RAG & Background Engine"]
-        Celery["Celery & Redis Worker"]
-        Chunker["Document Chunker & Metadata Extractor"]
-        VectorDB["Pinecone Vector Store"]
-        LangGraph["LangGraph Workflow Machine"]
-    end
-
-    subgraph Rendering ["Deterministic Layout & PPTX Layer"]
-        LayoutEngine["Layout Engine (Table Pagination & Bounds Math)"]
-        PPTRenderer["python-pptx Renderer (Themes)"]
-    end
-
-    Dropzone -->|Upload File| Storage
-    Storage -->|Trigger Task| Celery
-    Celery --> Chunker
-    Chunker --> VectorDB
-
-    UI -->|Prompt Request| Router
-    Router --> LangGraph
-    LangGraph -->|Hybrid Query| VectorDB
-    VectorDB -->|Retrieved Context + Citations| LangGraph
-    LangGraph -->|Structured JSON Spec| LayoutEngine
-    LayoutEngine -->|Bounds & Split Tables| PPTRenderer
-    PPTRenderer -->|.pptx File| Viewer
+flowchart LR
+    Upload["Upload"] --> Extract["Extract blocks<br/>(tables kept whole)"] --> Chunk["Sentence-aware chunks"] --> Embed["Embed (one provider)"] --> Index[("Vector store<br/>Pinecone / pgvector / mock")]
+    Prompt["Prompt + audience/tone/language"] --> Plan["Plan searches"] --> Retrieve["Hybrid retrieval<br/>vector + BM25 + MMR"]
+    Index --> Retrieve --> Write["LLM writes content,<br/>cites sources [S1..Sn]"] --> Check["Fact-check figures & quotes,<br/>auto-cite, one repair pass,<br/>remove unsupported claims"] --> Layout["LayoutEngine<br/>(pagination, text fitting)"] --> PPTX[".pptx + preview"]
 ```
 
----
+- **Ingestion:** per-format extractors (`backend/app/document_processing/`), tables stay intact, chunks never split a sentence.
+- **Retrieval:** LLM-planned sub-queries, vector scores normalised per query plus BM25 keyword ranking, MMR for diversity (`rag/retriever.py`).
+- **Generation:** a plain Python pipeline in `rag/graph.py` (not LangGraph). Sources are numbered, the LLM cites them by ID,
+  and `rag/validator.py` checks that every figure appears in the cited sources (e.g. `$4.2M` = `$4,200,000`).
+- **Layout:** `presentation/layout_engine.py` paginates tables and long lists ("(cont.)" slides) and shrinks titles and quotes to fit. 5 themes.
+- **Jobs:** Celery + Redis, falling back to in-process background tasks. The UI polls job progress.
+- **Resilience:** without API keys the app still runs (mock vector store, hash vectors + keyword ranking, and a
+  no-LLM deck assembled verbatim from document excerpts).
 
-## Key Features
+## Stack
 
-- **Multi-Format Ingestion**: Ingests PDF, DOCX, XLSX, CSV, PPTX, TXT, and Markdown files while preserving spreadsheet table headers, sheets, and rows.
-- **Hybrid RAG & LangGraph Workflow**: Query decomposition, multi-query retrieval, reranking, context assembly, and document citation tracking (filename, page, section, excerpt).
-- **Deterministic Table Pagination**: Automatically splits long tables (e.g. 25 rows into $10 + 10 + 5$ rows across 3 slides) with dynamic cell density calculations to guarantee **zero visual overflow**.
-- **Visual Design Themes**: Built-in support for Professional, Minimal, Dark, Corporate, and Modern themes.
-- **Single Slide Regeneration**: Allows users to rewrite or re-style individual slides without re-generating the entire deck.
-- **Async Job Queue**: Celery + Redis workers manage non-blocking ingestion and presentation creation with real-time SSE step progress tracking.
-
----
-
-## Project Structure
-
-```text
-ppt-generator-agents/
-├── backend/
-│   ├── app/
-│   │   ├── api/v1/          # FastAPI Route Controllers (auth, projects, documents, presentations)
-│   │   ├── core/            # Config & Pydantic settings
-│   │   ├── database/        # Async SQLAlchemy 2.0 Engine & session
-│   │   ├── document_processing/ # Multi-format extractors & smart chunker
-│   │   ├── models/          # DB Models (User, Project, Document, Chunk, Presentation, Slide, Job)
-│   │   ├── presentation/    # Layout Engine, Table Pagination & python-pptx Renderer
-│   │   ├── rag/             # LangGraph State Machine, Vector Store & Hybrid Retriever
-│   │   ├── schemas/         # Pydantic Schemas (PresentationSpec, User, Project, Document)
-│   │   ├── services/        # File Storage Service
-│   │   └── workers/         # Celery App & Async Tasks
-│   ├── tests/               # Pytest suite for Table Pagination & Layout Bounds
-│   ├── Dockerfile
-│   └── requirements.txt
-│
-├── frontend/
-│   ├── src/
-│   │   ├── app/             # Next.js 16 App Router pages
-│   │   ├── components/      # UI Components (Navbar, Providers)
-│   │   └── lib/             # Axios API client & Zustand store
-│   ├── Dockerfile
-│   └── package.json
-│
-├── docker-compose.yml
-├── .env.example
-└── README.md
-```
+| | |
+|---|---|
+| Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (**sync**), Alembic, PostgreSQL, Celery + Redis, python-pptx |
+| RAG | Pinecone / pgvector / in-memory store; OpenAI or Google (Gemini) embeddings; Anthropic / OpenAI / Google chat models via LangChain |
+| Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS v4, TanStack Query, Zustand |
 
 ---
 
-## Quick Start (Docker Compose)
-
-Start all services (Frontend, Backend, Worker, PostgreSQL, Redis) with a single command:
+## Quick start (Docker Compose)
 
 ```bash
+cp backend/.env.example backend/.env   # then fill in keys, SECRET_KEY, LLM_PROVIDER
 docker compose up --build
 ```
 
-Access the Web Application at:
-- **Frontend App**: `http://localhost:3000`
-- **FastAPI Documentation**: `http://localhost:8000/docs`
+- App: http://localhost:3000 · API docs: http://localhost:8000/docs
+- The API and the worker share the `storage_data` volume (uploads and decks). The database schema is migrated on startup.
 
----
-
-## Manual Local Development
-
-### 1. Backend Setup
+## Local development
 
 ```bash
+# Backend
 cd backend
-python -m venv myvenv
-# On Windows:
-myvenv\Scripts\activate
-# On Linux/macOS:
-source myvenv/bin/activate
-
+python -m venv .venv
+.venv\Scripts\activate            # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-```
+cp .env.example .env              # edit it
+uvicorn app.main:app --reload --port 8000     # runs Alembic migrations on startup
+celery -A app.workers.celery_app.celery_app worker --loglevel=info   # optional
 
-### 2. Run Automated Layout Engine Tests
+# Tests (hermetic: no network, no real vector DB)
+PYTHONPATH=. pytest               # PowerShell: $env:PYTHONPATH="."; pytest
 
-```bash
-cd backend
-$env:PYTHONPATH="."  # Windows Powershell
-pytest tests/test_layout_engine.py
-```
-
-### 3. Frontend Setup
-
-```bash
+# Frontend
 cd frontend
 npm install
-npm run dev
+npm run dev                       # http://localhost:3000
 ```
 
----
+Schema changes: edit the models, then
+`alembic revision --autogenerate -m "..."` from `backend/` (review the file) and restart the API, or run `alembic upgrade head`.
 
-## Environment Variables
+## Configuration (`backend/.env`)
 
-Copy `.env.example` to `.env`:
+All settings are in `backend/app/core/config.py`. The template is [`backend/.env.example`](backend/.env.example).
+Values like `your_openai_api_key_here` are treated as **unset**.
 
-```env
-DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/ppt_generator_db
-REDIS_URL=redis://localhost:6379/0
-VECTOR_DB_TYPE=pinecone
-PINECONE_API_KEY=your_pinecone_api_key_here
-PINECONE_INDEX_NAME=ppt-generator-rag
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
-```
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY` | JWT signing key. Required unless `ENVIRONMENT=development` |
+| `CORS_ORIGINS` | Comma-separated origins allowed to call the API |
+| `DATABASE_URL` | PostgreSQL (sync driver) |
+| `VECTOR_DB_TYPE` | `pinecone`, `pgvector` or `mock` |
+| `LLM_PROVIDER`, `LLM_MODEL` | `anthropic` / `openai` / `google`, optional model override |
+| `EMBEDDING_PROVIDER` | `auto` (OpenAI key → OpenAI, else Google key → Google, else hash), chosen once and never mixed |
+| `EMBEDDING_DIMENSION` | Must equal the vector index dimension (default 1536) |
+
+Changing the embedding provider, model or dimension puts vectors in a different space: re-index your documents
+(the **Retry** button in the Documents tab, or delete and re-upload).
+
+## Project docs
+
+| | |
+|---|---|
+| [`docs/PRD.md`](docs/PRD.md) | Goals, users, features |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | How the code is organised and how data flows |
+| [`docs/API.md`](docs/API.md) | Endpoints and the `PresentationSpec` contract |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | UI and deck themes |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Why things are the way they are |
+| [`docs/TASKS.md`](docs/TASKS.md), [`docs/PROGRESS.md`](docs/PROGRESS.md) | Backlog and session log |

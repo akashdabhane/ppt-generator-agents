@@ -4,6 +4,7 @@ from collections import Counter
 from typing import List, Dict, Any, Optional
 
 from app.rag.vector_store import vector_store
+from app.services.embeddings import embedding_service
 from app.rag.text_utils import tokenize, jaccard
 
 
@@ -22,6 +23,7 @@ class HybridRetriever:
     MMR_LAMBDA = 0.75
     BM25_K1 = 1.5
     BM25_B = 0.75
+    NON_SEMANTIC_POOL = 200
 
     def __init__(self, top_k: int = 15, max_chars: int = 30000):
         self.top_k = top_k
@@ -33,7 +35,8 @@ class HybridRetriever:
         top_k = top_k or self.top_k
         max_chars = max_chars or self.max_chars
         queries = list(dict.fromkeys(q for q in [query] + (sub_queries or []) if q and q.strip()))
-        pool_size = max(top_k * 2, 20)
+        # Hash embeddings (no embedding key) carry no meaning, so pull a wide pool and let BM25 do the ranking
+        pool_size = max(top_k * 2, 20) if embedding_service.is_semantic else self.NON_SEMANTIC_POOL
 
         # 1-2. Candidate pool with the best per-query-normalised vector score for each chunk
         candidates: Dict[str, Dict[str, Any]] = {}
@@ -53,11 +56,12 @@ class HybridRetriever:
         if not candidates:
             return []
 
-        # 3. Hybrid relevance
+        # 3. Hybrid relevance (keyword-only when the vectors carry no meaning)
         items = list(candidates.values())
         lexical = self._bm25(items, [t for q in queries for t in tokenize(q)])
+        w_vec, w_lex = (self.VECTOR_WEIGHT, self.LEXICAL_WEIGHT) if embedding_service.is_semantic else (0.0, 1.0)
         for item, lex in zip(items, lexical):
-            item["relevance_score"] = self.VECTOR_WEIGHT * item["vector_score"] + self.LEXICAL_WEIGHT * lex
+            item["relevance_score"] = w_vec * item["vector_score"] + w_lex * lex
             item["_tokens"] = set(tokenize(item["content"]))
 
         # 4. MMR selection within the budgets

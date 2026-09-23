@@ -3,6 +3,17 @@
 export type DocumentStatus = "UPLOADED" | "PROCESSING" | "CHUNKING" | "EMBEDDING" | "INDEXED" | "FAILED";
 export type PresentationStatus = "PENDING" | "GENERATING" | "COMPLETED" | "FAILED";
 
+export interface Project {
+  id: string;
+  user_id: string;
+  name: string;
+  description?: string | null;
+  created_at: string;
+  updated_at: string;
+  document_count: number;
+  presentation_count: number;
+}
+
 export interface ProjectDocument {
   id: string;
   project_id: string;
@@ -64,6 +75,8 @@ export interface Presentation {
   created_at: string;
   updated_at: string;
   slides: Slide[];
+  // Fact-check result of the latest generation, e.g. "8/8 content slides cited · 1 unsupported claim(s) removed"
+  generation_summary?: string | null;
 }
 
 export interface GenerationProgress {

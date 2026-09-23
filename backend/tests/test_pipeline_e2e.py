@@ -61,6 +61,7 @@ def test_upload_ingest_generate_download_without_api_keys(api_env, monkeypatch):
         assert s["citations_json"], s
         assert {c["document_name"] for c in s["citations_json"]} <= {"q3_report.txt", "sales.csv"}
     assert any(s["slide_type"] == "table" for s in pres["slides"])
+    assert "content slides cited" in pres["generation_summary"]
 
     # Download a valid 16:9 deck whose shapes all stay on the slide
     res = client.get(f"/presentations/{pres_id}/download")

@@ -42,8 +42,9 @@ def run_document_ingestion(document_id: str):
             db.commit()
 
             # Idempotent: a reindex/retry replaces this document's previous chunks instead of duplicating them
-            vector_store.delete_document_chunks(doc.project_id, doc.id)
-            for old in db.execute(select(DocumentChunk).where(DocumentChunk.document_id == doc.id)).scalars():
+            old_chunks = db.execute(select(DocumentChunk).where(DocumentChunk.document_id == doc.id)).scalars().all()
+            vector_store.delete_document_chunks(doc.project_id, doc.id, [c.vector_id for c in old_chunks if c.vector_id])
+            for old in old_chunks:
                 db.delete(old)
             db.flush()
 
@@ -92,14 +93,15 @@ def run_presentation_generation(job_id: str, num_slides: int = 10, audience: str
             on_progress("RETRIEVING_DOCUMENTS", 5, "Starting generation")
 
             # Steps 1-2: plan + retrieve, write, fact-check and repair (see rag/graph.py)
+            # Settings saved on the presentation win over task arguments (older queued jobs have none saved)
             spec, report = rag_engine.execute_with_report(
                 project_id=pres.project_id,
                 prompt=pres.prompt,
                 num_slides=num_slides,
-                audience=audience,
+                audience=pres.audience or audience,
                 theme=pres.theme,
-                tone=tone,
-                language=language,
+                tone=pres.tone or tone,
+                language=pres.language or language,
                 on_progress=on_progress,
             )
 

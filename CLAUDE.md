@@ -1,4 +1,4 @@
-# CLAUDE.md — AI RAG PowerPoint Generator ("AI SlideRAG")
+# CLAUDE.md — Clarion (AI RAG PowerPoint generator)
 
 Users upload documents into a project, the backend indexes them for RAG, and users generate
 `.pptx` decks from a natural-language prompt. Every slide is grounded in (and cites) the uploaded documents.
@@ -29,7 +29,7 @@ The LLM never produces coordinates, sizes, fonts, colors or positioning. Layout 
 
 ## Stack
 
-- **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0 (**sync** sessions), PostgreSQL, Celery + Redis,
+- **Backend:** Python 3.12, FastAPI, SQLAlchemy 2.0 (**sync** sessions) + Alembic, PostgreSQL, Celery + Redis,
   Pinecone / pgvector / in-memory mock vector store, LangChain chat models (Anthropic/OpenAI/Google), python-pptx.
 - **Frontend:** Next.js 16 (App Router) + React 19, TypeScript, Tailwind CSS v4, TanStack Query, Zustand, Axios, lucide-react.
   Next 16 has breaking changes: read `frontend/node_modules/next/dist/docs/` before using unfamiliar Next APIs.
@@ -41,7 +41,8 @@ The LLM never produces coordinates, sizes, fonts, colors or positioning. Layout 
 docker compose up --build
 
 # Backend (from backend/, venv active)
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000                            # applies Alembic migrations on startup
+alembic revision --autogenerate -m "describe change"                 # after changing a model (review the file)
 celery -A app.workers.celery_app.celery_app worker --loglevel=info   # optional; API falls back to in-process
 PYTHONPATH=. pytest                      # PowerShell: $env:PYTHONPATH="."; pytest
 
@@ -52,7 +53,8 @@ npm run build
 ```
 
 API docs: http://localhost:8000/docs. Config comes from `backend/.env` (template: `backend/.env.example`).
-With no API keys, the app still runs: mock vector store, hash-based fake embeddings, and a deterministic fallback deck.
+With no API keys, the app still runs: mock vector store, hash vectors + keyword ranking, and a no-LLM deck built verbatim
+from document excerpts. Placeholder values like `your_openai_api_key_here` count as unset.
 
 ## Working rules
 

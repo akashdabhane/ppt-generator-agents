@@ -52,7 +52,7 @@ export default function Navbar() {
           {/* Brand Logo */}
           <Link href="/dashboard" className="flex items-center space-x-3 text-emerald-700 dark:text-emerald-400 font-extrabold text-xl hover:opacity-90 transition">
             <Presentation className="w-7 h-7" />
-            <span>AI SlideRAG</span>
+            <span>Clarion</span>
           </Link>
 
           {/* Nav Items & Controls */}
