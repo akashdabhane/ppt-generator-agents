@@ -47,6 +47,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const { data: documents = [], refetch: refetchDocs } = useQuery({
     queryKey: ["documents", projectId],
     queryFn: async () => (await api.get(`/projects/${projectId}/documents`)).data,
+    // Ingestion runs in the background: keep polling until every document reaches a terminal status.
+    refetchInterval: (query) => {
+      const docs: { status: string }[] = query.state.data ?? [];
+      return docs.some((d) => d.status !== "INDEXED" && d.status !== "FAILED") ? 2000 : false;
+    },
   });
 
   const { data: presentations = [], refetch: refetchPresentations } = useQuery({

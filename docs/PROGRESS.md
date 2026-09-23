@@ -4,6 +4,14 @@ Newest entry first. At the end of every session, add: **what changed · what's b
 
 ---
 
+## 2026-09-23: Document status now updates live after upload
+
+**Root cause:** the `["documents", id]` query on `/projects/[id]` fetched once, so a status change during background ingestion only showed after a full page reload.
+**Changed:** `frontend/src/app/projects/[id]/page.tsx`: the documents query now uses `refetchInterval` to poll every 2 s while any document is not `INDEXED`/`FAILED`, and stops once all are terminal.
+**Verified:** `tsc --noEmit` clean. Not verified in a browser. Pre-existing lint errors (`any` types) remain in that file.
+
+---
+
 ## 2026-09-23: Fixed "Generate PPT produces no output"
 
 **Root causes found:** (1) the Google model `gemini-1.5-pro` is retired (404), so every generation errored. (2) The user's job was stuck at 40 % because the in-process task died, and the UI showed nothing for failed or stuck jobs.
