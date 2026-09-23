@@ -8,6 +8,7 @@ from sqlalchemy.pool import StaticPool
 import app.models  # noqa: F401  (registers all tables on Base.metadata)
 from app.api.v1 import projects as projects_api
 from app.api.v1 import presentations as presentations_api
+from app.api.v1 import documents as documents_api
 from app.api.v1.deps import get_db, get_current_user
 from app.database.session import Base
 from app.models import User
@@ -15,11 +16,20 @@ from app.services.storage import StorageService
 
 
 class FakeVectorStore:
+    """Records deletes and keeps upserted chunks per project, like the mock store."""
+
     def __init__(self):
         self.deleted = []
+        self.store = {}
+
+    def upsert_chunks(self, project_id, chunks):
+        self.store.setdefault(project_id, []).extend(chunks)
+        return [f"v{i}" for i in range(len(chunks))]
 
     def delete_document_chunks(self, project_id, document_id):
         self.deleted.append((project_id, document_id))
+        self.store[project_id] = [c for c in self.store.get(project_id, [])
+                                  if c["metadata"]["document_id"] != document_id]
 
 
 @pytest.fixture
@@ -43,11 +53,16 @@ def api_env(tmp_path, monkeypatch):
     monkeypatch.setattr(projects_api, "storage_service", storage)
     monkeypatch.setattr(projects_api, "vector_store", vectors)
     monkeypatch.setattr(presentations_api, "storage_service", storage)
+    monkeypatch.setattr(documents_api, "storage_service", storage)
+    monkeypatch.setattr(documents_api, "vector_store", vectors)
+    dispatched = []
+    monkeypatch.setattr(documents_api, "dispatch_document_ingestion", lambda doc_id, *a, **k: dispatched.append(doc_id))
 
     current = {"user": owner}
     app = FastAPI()
     app.include_router(projects_api.router)
     app.include_router(presentations_api.router)
+    app.include_router(documents_api.router)
 
     def override_db():
         s = Session()
@@ -60,5 +75,6 @@ def api_env(tmp_path, monkeypatch):
     app.dependency_overrides[get_current_user] = lambda: current["user"]
 
     yield {"client": TestClient(app), "db": db, "owner": owner, "other": other,
-           "current": current, "storage": storage, "vectors": vectors}
+           "current": current, "storage": storage, "vectors": vectors, "Session": Session,
+           "dispatched": dispatched}
     db.close()

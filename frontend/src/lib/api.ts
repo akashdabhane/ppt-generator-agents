@@ -1,4 +1,5 @@
 import axios from "axios";
+import { useAuthStore } from "@/lib/store";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
@@ -32,3 +33,20 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+// Missing/expired token: clear the session and send the user to sign in (the login form handles its own errors)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const isAuthRequest = String(error.config?.url || "").startsWith("/auth/");
+    if (typeof window !== "undefined" && error.response?.status === 401 && !isAuthRequest) {
+      useAuthStore.getState().logout();
+      const path = window.location.pathname;
+      if (path !== "/login" && path !== "/register") {
+        // Outside React there is no router; a full reload to the login page also clears every cached query
+        window.location.assign(new URL("/login", window.location.origin));
+      }
+    }
+    return Promise.reject(error);
+  }
+);

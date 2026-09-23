@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, downloadPresentation } from "@/lib/api";
 import ConfirmDialog from "@/components/ConfirmDialog";
+import { apiErrorDetail, type GenerationProgress, type Presentation as Deck, type ProjectDocument } from "@/lib/types";
 import { useDropzone } from "react-dropzone";
 import {
   FileText,
@@ -35,10 +36,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   const [numSlides, setNumSlides] = useState(10);
   const [audience, setAudience] = useState("Senior Management");
   const [theme, setTheme] = useState("Professional");
-  const [generationJob, setGenerationJob] = useState<any>(null);
+  const [generationJob, setGenerationJob] = useState<GenerationProgress | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [presentationToDelete, setPresentationToDelete] = useState<{ id: string; title: string } | null>(null);
+  const [documentToDelete, setDocumentToDelete] = useState<{ id: string; filename: string } | null>(null);
 
   // Queries
   const { data: project } = useQuery({
@@ -46,17 +48,17 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
     queryFn: async () => (await api.get(`/projects/${projectId}`)).data,
   });
 
-  const { data: documents = [], refetch: refetchDocs } = useQuery({
+  const { data: documents = [], refetch: refetchDocs } = useQuery<ProjectDocument[]>({
     queryKey: ["documents", projectId],
     queryFn: async () => (await api.get(`/projects/${projectId}/documents`)).data,
     // Ingestion runs in the background: keep polling until every document reaches a terminal status.
     refetchInterval: (query) => {
-      const docs: { status: string }[] = query.state.data ?? [];
+      const docs = query.state.data ?? [];
       return docs.some((d) => d.status !== "INDEXED" && d.status !== "FAILED") ? 2000 : false;
     },
   });
 
-  const { data: presentations = [], refetch: refetchPresentations } = useQuery({
+  const { data: presentations = [], refetch: refetchPresentations } = useQuery<Deck[]>({
     queryKey: ["presentations", projectId],
     queryFn: async () => (await api.get(`/projects/${projectId}/presentations`)).data,
   });
@@ -89,6 +91,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       "text/markdown": [".md"],
       "text/csv": [".csv"],
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"],
     },
   });
 
@@ -104,8 +107,8 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
       return res.data;
     },
     onMutate: () => setGenerationError(null),
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      setGenerationError(err.response?.data?.detail || "Could not start generation. Is the backend running?");
+    onError: (err) => {
+      setGenerationError(apiErrorDetail(err, "Could not start generation. Is the backend running?"));
     },
     onSuccess: (data) => {
       setGenerationJob(data);
@@ -157,8 +160,25 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
   // Delete document
   const deleteDocMutation = useMutation({
     mutationFn: async (docId: string) => await api.delete(`/documents/${docId}`),
+    onSuccess: () => {
+      refetchDocs();
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      setDocumentToDelete(null);
+    },
+  });
+
+  const closeDeleteDocumentDialog = () => {
+    setDocumentToDelete(null);
+    deleteDocMutation.reset();
+  };
+
+  // Retry ingestion of a failed document (the list then polls until it's INDEXED/FAILED again)
+  const reindexMutation = useMutation({
+    mutationFn: async (docId: string) => await api.post(`/documents/${docId}/reindex`),
     onSuccess: () => refetchDocs(),
   });
+
+  const indexedCount = documents.filter((d) => d.status === "INDEXED").length;
 
   return (
     <div className="space-y-8 py-2">
@@ -256,7 +276,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               </div>
             ) : (
               <div className="space-y-3">
-                {documents.map((doc: any) => (
+                {documents.map((doc) => (
                   <div
                     key={doc.id}
                     className="bg-white/80 dark:bg-[#0d120f] border border-stone-200 dark:border-zinc-800 p-4 rounded-xl flex items-center justify-between hover:border-emerald-500/50 transition shadow-xs"
@@ -272,6 +292,11 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                           <span>•</span>
                           <span className="uppercase">{doc.file_type}</span>
                         </div>
+                        {doc.status === "FAILED" && doc.error_message && (
+                          <p className="text-xs text-red-600 dark:text-red-400 mt-1 line-clamp-2" title={doc.error_message}>
+                            {doc.error_message}
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -290,8 +315,20 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
                         <span>{doc.status}</span>
                       </span>
 
+                      {doc.status === "FAILED" && (
+                        <button
+                          onClick={() => reindexMutation.mutate(doc.id)}
+                          disabled={reindexMutation.isPending && reindexMutation.variables === doc.id}
+                          className="flex items-center space-x-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-stone-300 dark:border-zinc-700 text-slate-700 dark:text-zinc-300 hover:border-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-400 transition disabled:opacity-50"
+                          title="Retry indexing this document"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          <span>Retry</span>
+                        </button>
+                      )}
+
                       <button
-                        onClick={() => deleteDocMutation.mutate(doc.id)}
+                        onClick={() => setDocumentToDelete({ id: doc.id, filename: doc.filename })}
                         className="text-slate-400 hover:text-red-500 p-2 transition"
                         title="Delete Document"
                       >
@@ -403,9 +440,19 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
               </div>
             )}
 
+            {indexedCount === 0 && (
+              <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/50 p-4 rounded-xl flex items-start gap-2 text-xs text-amber-800 dark:text-amber-300">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  Slides are built only from your documents. Upload at least one document in the Documents tab and wait
+                  until it shows <span className="font-semibold">INDEXED</span>.
+                </span>
+              </div>
+            )}
+
             <button
               onClick={() => generateMutation.mutate()}
-              disabled={!prompt.trim() || isGenerating}
+              disabled={!prompt.trim() || isGenerating || indexedCount === 0}
               className="w-full py-3.5 bg-[#055a44] hover:bg-[#044836] text-white font-bold rounded-xl shadow-md transition disabled:opacity-50 flex items-center justify-center space-x-2 text-sm"
             >
               <Sparkles className="w-5 h-5" />
@@ -425,7 +472,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {presentations.map((pres: any) => (
+              {presentations.map((pres) => (
                 <div
                   key={pres.id}
                   className="bg-white/80 dark:bg-[#0d120f] border border-stone-200 dark:border-zinc-800 p-6 rounded-2xl flex flex-col justify-between hover:border-emerald-500/50 transition shadow-xs"
@@ -493,6 +540,24 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         </div>
       )}
 
+      {/* Delete Document Confirmation */}
+      <ConfirmDialog
+        open={documentToDelete !== null}
+        title="Delete this document?"
+        message={
+          <>
+            Do you really want to delete{" "}
+            <span className="font-semibold text-slate-800 dark:text-zinc-200">{documentToDelete?.filename}</span>?
+            It will no longer be used or cited in new presentations. Existing decks are not changed. This can&apos;t be undone.
+          </>
+        }
+        confirmLabel="Delete Document"
+        isPending={deleteDocMutation.isPending}
+        error={deleteDocMutation.isError ? "Could not delete the document. Please try again." : null}
+        onConfirm={() => documentToDelete && deleteDocMutation.mutate(documentToDelete.id)}
+        onCancel={closeDeleteDocumentDialog}
+      />
+
       {/* Delete Presentation Confirmation */}
       <ConfirmDialog
         open={presentationToDelete !== null}
@@ -508,8 +573,7 @@ export default function ProjectDetailPage({ params }: { params: Promise<{ id: st
         isPending={deletePresentationMutation.isPending}
         error={
           deletePresentationMutation.isError
-            ? (deletePresentationMutation.error as { response?: { data?: { detail?: string } } }).response?.data?.detail ||
-              "Could not delete the presentation. Please try again."
+            ? apiErrorDetail(deletePresentationMutation.error, "Could not delete the presentation. Please try again.")
             : null
         }
         onConfirm={() => presentationToDelete && deletePresentationMutation.mutate(presentationToDelete.id)}

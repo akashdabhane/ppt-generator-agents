@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { apiErrorDetail } from "@/lib/types";
 import { useAuthStore } from "@/lib/store";
 import { Presentation, Lock, Mail, User, AlertCircle } from "lucide-react";
 
@@ -26,8 +27,8 @@ export default function RegisterPage() {
       const res = await api.post("/auth/register", { full_name: fullName, email, password });
       setAuth(res.data.user, res.data.access_token);
       router.push("/dashboard");
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Registration failed. Try again.");
+    } catch (err) {
+      setError(apiErrorDetail(err, "Registration failed. Try again."));
     } finally {
       setLoading(false);
     }

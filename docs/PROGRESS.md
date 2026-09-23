@@ -4,6 +4,33 @@ Newest entry first. At the end of every session, add: **what changed · what's b
 
 ---
 
+## 2026-09-23: Gap audit against the PRD + fixes
+
+Audited every PRD feature (F1–F13) and the four "must always hold" rules (§6) against the code. Found and fixed:
+
+| Gap | PRD | Fix |
+|---|---|---|
+| Login page posted JSON; `/auth/login` expects an OAuth2 form, so sign-in always 422'd | F1 | `login/page.tsx` sends `URLSearchParams` (`username`=email) |
+| Bullet/summary/two-column lists, long titles and quotes overflowed the slide | §6 zero overflow | `LayoutEngine` text measurement + pagination/fit (D-010). Renderer rewritten on top of it |
+| No-key fallback deck invented numbers and advice. Empty retrieval let the LLM write from memory | §6 grounding | Verbatim, cited fallback. 400 without an INDEXED doc. `NoGroundingContextError`. Unknown citations dropped (D-011) |
+| Deleted documents stayed in the vector store and kept being cited. Reindex duplicated chunks | Grounding / privacy | Delete removes vectors; ingestion is idempotent |
+| Slide regeneration: no ownership check, replaced the slide with a *title* slide, `.pptx` never updated | F12, §6 isolation | `rag_engine.regenerate_slide` keeps the type; endpoint checks owner/status and re-renders the `.pptx` |
+| Reindex had no ownership check. `GET /presentations/{id}` leaked existence (403) | §6 isolation | 404 for non-owners |
+| Dark theme: two-column text and quote authors were default black | F8 | All text set on runs with theme colours (D-012) |
+| PPTX uploads parsed as plain text (garbage); dropzone didn't accept `.pptx` | F3 | `extractors/pptx_extractor.py` (per slide, tables, notes); dropzone accepts `.pptx` |
+| Failed documents showed no reason and had no retry. Document delete had no confirmation | F3 UX | Error text, Retry button (reindex), `ConfirmDialog` |
+| Preview drew nothing for quote and summary slides | F6/F11 | Added both previews |
+| Regenerate errors were silent. Expired token left pages blank | UX | Error shown in the modal. Axios 401 interceptor → logout + `/login` |
+| `npm run lint` failed on `any`s | Quality | `lib/types.ts`, all pages typed. Lint 0 errors / 0 warnings |
+
+**Tests:** 47 backend tests (was 12): layout text fitting, renderer (all themes, bounds, run colours), grounding, regeneration, documents, PPTX extractor, auth,
+and an end-to-end no-API-key run (upload → ingest → generate → download a valid in-bounds `.pptx`). Frontend: eslint clean, `tsc` clean, `npm run build` OK.
+**Not verified in a browser.** `test_table_pagination_long_text` was relaxed from "exactly 4 rows per slide" to "at most 4" because the new height check packs 3 (D-010).
+**Still open (see TASKS):** audience not persisted, preview ≠ `.pptx` slide count for paginated slides, silent upload errors, Docker/requirements fixes, SECRET_KEY/CORS hardening, structured LLM output, Alembic.
+**Resume here:** `TASKS.md` → P0 Docker items (`requirements.txt` UTF-16, `output: "standalone"`).
+
+---
+
 ## 2026-09-23: Delete presentation from the project's Decks tab
 
 **Changed:** Each deck card in `/projects/[id]` → Decks has a trash button that opens `ConfirmDialog` ("Do you really want to delete …?"). The button is disabled while the deck is `PENDING`/`GENERATING`.

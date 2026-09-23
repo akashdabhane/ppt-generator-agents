@@ -41,3 +41,18 @@ D-001 to D-009 were reconstructed from the existing code on 2026-09-22.
 ### D-009 — Frontend: Next.js App Router, client components, TanStack Query + Zustand
 - **Decision:** Pages are `"use client"` and fetch with TanStack Query via a shared Axios instance. Zustand holds only auth. Tailwind v4 uses class-based dark mode.
 - **Consequences:** Simple to extend. No SSR data fetching and no server actions.
+
+### D-010 — Text slides are measured and paginated, like tables (2026-09-23)
+- **Context:** Only tables were paginated. Long bullet/summary/two-column lists and long titles overflowed the slide, breaking PRD §6 "zero overflow".
+- **Decision:** `LayoutEngine` estimates wrapped line counts (conservative average glyph width 0.55 em, 0.6 bold, 1.2 line spacing, default text insets). Lists are split greedily into "(cont.)" slides. Titles, the title card and quotes step the font down to a minimum and truncate with "…" only as a last resort. Tables keep the 10/7/4 row caps and also respect a height budget.
+- **Consequences:** One spec slide can become several `.pptx` slides (the DB/preview still has one row per spec slide). The estimate over-measures slightly, so slides may carry a little less text than would physically fit.
+
+### D-011 — Refuse rather than invent (2026-09-23)
+- **Context:** The no-LLM fallback deck contained made-up numbers and generic advice, and with empty retrieval the LLM would write from memory.
+- **Decision:** Generation needs at least one `INDEXED` document (400 otherwise) and non-empty retrieval (job `FAILED` with a clear message otherwise). The fallback deck copies sentences/tables verbatim from retrieved chunks and cites each one. LLM citations to documents that weren't retrieved are dropped. Without an LLM, slide regeneration is only offered for types that can be built from excerpts (bullet, summary, table).
+- **Consequences:** The no-key deck is plainer, but everything in it is traceable. Users see an error instead of a plausible-looking but ungrounded deck.
+
+### D-012 — Text formatting is set on runs, not only paragraph defaults (2026-09-23)
+- **Decision:** `PresentationRenderer._write()` sets font, size, bold/italic and colour on each run as well as `paragraph.font` (which python-pptx writes as `defRPr`, ignored by some importers).
+- **Consequences:** Decks look the same in PowerPoint, Google Slides, Keynote and LibreOffice. All text now has an explicit theme colour (this fixed black text on the Dark theme).
+

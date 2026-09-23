@@ -31,7 +31,7 @@ Files are stored on local disk: `backend/storage/projects/{project_id}/documents
 | `models/` | ORM models (see §4) |
 | `schemas/` | Pydantic I/O schemas; `presentation_spec.py` is the LLM ↔ renderer contract |
 | `api/v1/` | Routers: `auth`, `projects`, `documents`, `presentations`; `deps.py` has `get_db`, `get_current_user` |
-| `document_processing/` | `detector.py` (extension → type), `extractors/*` (raw blocks), `chunker.py` |
+| `document_processing/` | `detector.py` (extension → type), `extractors/*` (PDF, DOCX, XLSX/CSV, PPTX, text → raw blocks), `chunker.py` |
 | `services/` | `storage.py` (disk I/O), `embeddings.py` (OpenAI → Google → hash fallback) |
 | `rag/` | `vector_store.py` (adapters + factory), `retriever.py` (multi-query), `graph.py` (generation engine) |
 | `presentation/` | `layout_engine.py` (geometry + pagination), `themes.py`, `renderer.py` (python-pptx) |
@@ -54,12 +54,14 @@ Files are stored on local disk: `backend/storage/projects/{project_id}/documents
 3. The chunker keeps tables whole (one chunk each) and splits text into 1000-char windows with 150-char overlap.
 4. Status becomes `EMBEDDING`, then `vector_store.upsert_chunks(project_id, chunks)`. Pinecone uses the **namespace = project_id**.
 5. A `DocumentChunk` row is written per chunk (with `vector_id`), then `INDEXED`. Any exception sets `FAILED` + `error_message`.
+   Ingestion is idempotent: it first deletes the document's previous vectors and chunk rows, so reindex/retry never duplicates.
 
 ### Generation (`run_presentation_generation`)
 1. `POST /projects/{id}/presentations/generate` creates `Presentation(PENDING)` + `GenerationJob(QUEUED)` and dispatches.
 2. `rag_engine.execute()` expands the prompt into 4 fixed sub-queries → `HybridRetriever` searches each, dedupes by `filename_page_chunkindex`, sorts by score, keeps the top 15.
-3. It builds a context string and makes one LLM call that returns `PresentationSpec` JSON. On a parse error or missing key it falls back to `_generate_fallback_spec`.
-4. `PresentationRenderer(theme).render(spec, path)`: a blank 16:9 slide per spec item. Table specs are paginated by `LayoutEngine.split_table_rows`.
+3. Empty retrieval raises `NoGroundingContextError` (job `FAILED`). Otherwise it makes one LLM call that returns `PresentationSpec` JSON and drops citations to non-retrieved documents.
+   On a parse error or missing key it falls back to `_generate_fallback_spec`, which copies retrieved sentences/tables verbatim and cites each (nothing invented).
+4. `PresentationRenderer(theme).render(spec, path)`: a blank 16:9 slide per spec item. Tables are paginated by `LayoutEngine.split_table_rows`, and bullet/summary/two-column lists by `paginate_text_items`.
 5. One `PresentationSlide` row is written per **spec** slide (a paginated table is one DB row but several `.pptx` slides), then `COMPLETED`.
 6. The frontend polls `GET /presentations/{id}/progress` every 2 s.
 
@@ -84,9 +86,10 @@ User 1─* Project 1─* Document 1─* DocumentChunk
 
 - Slide: 10.0 × 5.625 in. Margins L/R 0.8, top 0.6, bottom 0.5. Title height 0.9, footer 0.4.
 - `get_title_rect()`, `get_content_rect()`, `get_two_column_rects()` (0.4 in gap).
-- Table pagination: max rows per slide = 10 (cells ≤ 60 chars), 7 (> 60), 4 (> 120).
-- `validate_bounds(rect)` checks that the rect is inside the slide. Tested in `backend/tests/test_layout_engine.py`.
-- The title slide card (1.0, 1.2, 8.0 × 3.2) is hard-coded in the renderer. It should move into the engine.
+- Table pagination: max rows per slide = 10 (cells ≤ 60 chars), 7 (> 60), 4 (> 120), and a height budget from the estimated row heights.
+- Text fitting (D-010): `estimate_lines`/`text_height` (conservative glyph widths), `paginate_text_items` (lists → pages), `fit_font_size` (step down to ≥ 12 pt, then truncate), `truncate_to_fit`.
+- `get_title_card_rect()` (1.0, 1.2, 8.0 × 3.2), `get_footer_rect()`. `validate_bounds(rect)` checks the rect is inside the slide.
+- Tested in `tests/test_layout_engine.py`, and end to end (every shape in bounds, every theme) in `tests/test_renderer.py`.
 
 ## 6. Configuration
 
@@ -112,8 +115,10 @@ Google `text-embedding-004` returns 768 dimensions and will not fit the same ind
 | `app/presentations/[id]` | Slide thumbnails, HTML preview per slide type, regenerate, download |
 | `components/Providers.tsx` | TanStack `QueryClient` + light/dark `ThemeContext` (`localStorage.app_theme`) |
 | `components/Navbar.tsx` | Brand, nav, theme toggle, user chip, logout |
-| `lib/api.ts` | Axios instance, adds `Authorization: Bearer <localStorage.token>` |
+| `lib/api.ts` | Axios instance, adds `Authorization: Bearer <localStorage.token>`. On a 401 (non-auth request) it logs out and redirects to `/login` |
+| `lib/types.ts` | API response types (`ProjectDocument`, `Presentation`, `Slide`, `SlideContent`, `Citation`, …) + `apiErrorDetail()` |
+| `components/ConfirmDialog.tsx` | Confirmation modal for destructive actions (project, deck, document delete) |
 | `lib/store.ts` | Zustand `useAuthStore` (user, token) |
 
 Data fetching: `useQuery` / `useMutation` inline in page components, with query keys like
-`["project", id]`, `["documents", id]`, `["presentations", id]`. There is no shared types file yet (`any` is used).
+`["project", id]`, `["documents", id]`, `["presentations", id]`, typed with `lib/types.ts`.

@@ -4,11 +4,12 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.api.v1.deps import get_db, get_current_user
 from app.models.user import User
 from app.models.project import Project
+from app.models.document import Document, DocumentStatus
 from app.models.presentation import Presentation, PresentationStatus
 from app.models.slide import PresentationSlide
 from app.models.job import GenerationJob, JobStatus
@@ -21,7 +22,9 @@ from app.schemas.presentation import (
 )
 from app.workers.tasks import dispatch_presentation_generation
 from app.services.storage import storage_service
-from app.rag.graph import rag_engine
+from app.rag.graph import rag_engine, NoGroundingContextError, SlideRegenerationUnavailable
+from app.presentation.renderer import PresentationRenderer
+from app.schemas.presentation_spec import PresentationSpec
 
 router = APIRouter(tags=["Presentations"])
 
@@ -39,6 +42,18 @@ def generate_presentation(
     project = db.get(Project, project_id)
     if not project or project.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Project not found")
+
+    # Grounding: without indexed documents the deck could only be invented
+    indexed = db.execute(
+        select(func.count(Document.id))
+        .where(Document.project_id == project.id)
+        .where(Document.status == DocumentStatus.INDEXED)
+    ).scalar() or 0
+    if indexed == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Upload at least one document and wait until it is INDEXED before generating a presentation."
+        )
 
     # 1. Create presentation record
     pres = Presentation(
@@ -120,12 +135,9 @@ def get_presentation(
     db: Session = Depends(get_db)
 ):
     pres = db.get(Presentation, presentation_id)
-    if not pres:
-        raise HTTPException(status_code=404, detail="Presentation not found")
-
-    project = db.get(Project, pres.project_id)
+    project = db.get(Project, pres.project_id) if pres else None
     if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+        raise HTTPException(status_code=404, detail="Presentation not found")
 
     slides_res = db.execute(
         select(PresentationSlide)
@@ -210,31 +222,43 @@ def regenerate_single_slide(
     db: Session = Depends(get_db)
 ):
     pres = db.get(Presentation, presentation_id)
-    if not pres:
+    project = db.get(Project, pres.project_id) if pres else None
+    if not project or project.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Presentation not found")
+    if pres.status != PresentationStatus.COMPLETED:
+        raise HTTPException(status_code=409, detail="Only a completed presentation can have slides regenerated.")
 
-    result = db.execute(
+    slides = db.execute(
         select(PresentationSlide)
         .where(PresentationSlide.presentation_id == presentation_id)
-        .where(PresentationSlide.slide_number == slide_number)
-    )
-    slide = result.scalars().first()
+        .order_by(PresentationSlide.slide_number)
+    ).scalars().all()
+    slide = next((s for s in slides if s.slide_number == slide_number), None)
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found")
 
-    # Update slide content using LLM context
-    new_spec = rag_engine.execute(
-        project_id=pres.project_id,
-        prompt=req.instructions or f"Regenerate slide {slide_number} for {pres.prompt}",
-        num_slides=1,
-        theme=pres.theme
-    )
-    if new_spec.slides:
-        first_slide_dict = new_spec.slides[0].model_dump() if hasattr(new_spec.slides[0], "model_dump") else new_spec.slides[0]
-        slide.content_json = first_slide_dict
-        slide.slide_type = first_slide_dict.get("type", slide.slide_type)
-        slide.citations_json = first_slide_dict.get("citations", slide.citations_json)
-        db.commit()
+    try:
+        new_slide = rag_engine.regenerate_slide(
+            project_id=pres.project_id,
+            deck_prompt=pres.prompt,
+            current=slide.content_json,
+            instructions=req.instructions,
+        )
+    except (NoGroundingContextError, SlideRegenerationUnavailable) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    new_dict = new_slide.model_dump()
+    slide.content_json = new_dict
+    slide.slide_type = new_dict["type"]
+    slide.citations_json = new_dict.get("citations", [])
+
+    # Re-render the .pptx so the download matches the preview
+    spec = PresentationSpec(title=pres.title, slides=[s.content_json for s in slides])
+    output_path = pres.pptx_path or storage_service.get_presentation_path(pres.project_id, pres.id)
+    PresentationRenderer(theme_name=pres.theme).render(spec, output_path)
+    pres.pptx_path = output_path
+    db.commit()
+    db.refresh(slide)
 
     return SlideResponse.model_validate(slide)
 

@@ -1,3 +1,4 @@
+import logging
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, BackgroundTasks, status
 from sqlalchemy.orm import Session
@@ -10,7 +11,10 @@ from app.models.document import Document, DocumentStatus
 from app.schemas.document import DocumentResponse
 from app.services.storage import storage_service
 from app.workers.tasks import dispatch_document_ingestion
+from app.rag.vector_store import vector_store
 from app.document_processing.detector import DocumentTypeDetector
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Documents"])
 
@@ -86,8 +90,13 @@ def delete_document(
 
     project = db.get(Project, doc.project_id)
     if not project or project.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+        raise HTTPException(status_code=404, detail="Document not found")
 
+    # Remove the vectors too, otherwise new decks keep retrieving and citing the deleted document
+    try:
+        vector_store.delete_document_chunks(doc.project_id, doc.id)
+    except Exception as e:
+        logger.error(f"Failed to delete vectors for document {doc.id}: {e}")
     storage_service.delete_file(doc.storage_path)
     db.delete(doc)
     db.commit()
@@ -103,6 +112,10 @@ def reindex_document(
 ):
     doc = db.get(Document, document_id)
     if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    project = db.get(Project, doc.project_id)
+    if not project or project.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Document not found")
 
     doc.status = DocumentStatus.UPLOADED

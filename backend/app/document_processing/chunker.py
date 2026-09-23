@@ -4,6 +4,7 @@ from app.document_processing.extractors.pdf_extractor import PDFProcessor
 from app.document_processing.extractors.docx_extractor import DOCXProcessor
 from app.document_processing.extractors.excel_extractor import XLSXProcessor
 from app.document_processing.extractors.text_extractor import TextProcessor
+from app.document_processing.extractors.pptx_extractor import PPTXProcessor
 
 
 class DocumentChunker:
@@ -14,6 +15,7 @@ class DocumentChunker:
         self.docx_proc = DOCXProcessor()
         self.xlsx_proc = XLSXProcessor()
         self.text_proc = TextProcessor()
+        self.pptx_proc = PPTXProcessor()
 
     def process_and_chunk(self, document_id: str, filename: str, file_path: str) -> List[Dict[str, Any]]:
         doc_type = DocumentTypeDetector.detect_type(filename)
@@ -23,6 +25,8 @@ class DocumentChunker:
             raw_blocks = self.pdf_proc.process(file_path)
         elif doc_type == "docx":
             raw_blocks = self.docx_proc.process(file_path)
+        elif doc_type == "pptx":
+            raw_blocks = self.pptx_proc.process(file_path)
         elif doc_type in ["xlsx", "csv"]:
             raw_blocks = self.xlsx_proc.process(file_path, is_csv=(doc_type == "csv"))
         else:

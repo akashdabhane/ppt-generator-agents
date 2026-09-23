@@ -31,21 +31,22 @@ Passwords are hashed with PBKDF2-SHA256 (100k iterations, 16-byte salt), stored 
 |---|---|---|---|
 | POST | `/projects/{project_id}/documents` | multipart `file` | `DocumentResponse` (status `UPLOADED`, ingestion is async) |
 | GET | `/projects/{project_id}/documents` | — | `DocumentResponse[]` |
-| DELETE | `/documents/{document_id}` | — | 204 (deletes the file and row; vectors are **not** removed) |
-| POST | `/documents/{document_id}/reindex` | — | `DocumentResponse` |
+| DELETE | `/documents/{document_id}` | — | 204 (owner only, else 404; deletes the file, row **and vectors**) |
+| POST | `/documents/{document_id}/reindex` | — | `DocumentResponse` (owner only, else 404; ingestion replaces the document's old chunks/vectors) |
 
 Allowed extensions: `.pdf .docx .pptx .txt .csv .xlsx .xls .md .markdown`. Anything else returns 400.
+`.pptx` is parsed per slide (`page` = slide number, `section` = slide title), with tables and speaker notes.
 
 ## Presentations — `api/v1/presentations.py`
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/projects/{project_id}/presentations/generate` | `PresentationGenerateRequest` | `GenerationProgressResponse` |
+| POST | `/projects/{project_id}/presentations/generate` | `PresentationGenerateRequest` | `GenerationProgressResponse`. 400 if the project has no `INDEXED` document |
 | GET | `/projects/{project_id}/presentations` | — | `PresentationResponse[]` (newest first, with slides) |
-| GET | `/presentations/{id}` | — | `PresentationResponse` |
+| GET | `/presentations/{id}` | — | `PresentationResponse` (404 for non-owners) |
 | GET | `/presentations/{id}/progress` | — | `GenerationProgressResponse` (latest job) |
 | GET | `/presentations/{id}/download` | — | `.pptx` file |
-| POST | `/presentations/{id}/slides/{slide_number}/regenerate` | `{instructions?}` | `SlideResponse` |
+| POST | `/presentations/{id}/slides/{slide_number}/regenerate` | `{instructions?}` | `SlideResponse`. Keeps the slide's type and re-renders the `.pptx`. 404 non-owner, 409 unless `COMPLETED`, 400 when nothing is retrieved or (without an LLM) the type can't be built from excerpts |
 | DELETE | `/presentations/{id}` | — | 204 (owner only, else 404; also deletes the `.pptx`). 409 while `PENDING`/`GENERATING` and younger than the 10-min stale timeout |
 
 ```jsonc
@@ -76,3 +77,6 @@ Every slide has `type`, `title`, and `citations: [{document_name, page?, section
 | `summary` | `key_takeaways: str[]` |
 
 No geometry, fonts or colors are allowed in the spec.
+
+Grounding: citations whose `document_name` wasn't in the retrieved context are dropped. When retrieval returns nothing,
+generation fails (`FAILED` + `error_message`) instead of letting the LLM write from memory.

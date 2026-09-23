@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { apiErrorDetail } from "@/lib/types";
 import { useAuthStore } from "@/lib/store";
 import { Presentation, Lock, Mail, AlertCircle } from "lucide-react";
 
@@ -22,11 +23,14 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await api.post("/auth/login", { email, password });
+      // /auth/login is an OAuth2 password form: form-urlencoded with the email as `username`
+      const res = await api.post("/auth/login", new URLSearchParams({ username: email, password }), {
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      });
       setAuth(res.data.user, res.data.access_token);
       router.push("/dashboard");
-    } catch (err: any) {
-      setError(err.response?.data?.detail || "Invalid email or password");
+    } catch (err) {
+      setError(apiErrorDetail(err, "Invalid email or password"));
     } finally {
       setLoading(false);
     }

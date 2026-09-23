@@ -1,6 +1,6 @@
 # PRD: AI RAG PowerPoint Generator ("AI SlideRAG")
 
-_Last updated: 2026-09-23. Drafted from the code and README, then confirmed against the project owner's
+_Last updated: 2026-09-23 (feature table re-audited against the code). Drafted from the code and README, then confirmed against the project owner's
 handoff summary from their previous agent (Anti-Gravity). The **Success metrics** in §7 are still proposals._
 
 ## 1. Problem & motive
@@ -45,18 +45,18 @@ They care more about correctness and a clean layout than about flashy design.
 
 | # | Feature | Status |
 |---|---|---|
-| F1 | Email/password sign-up and login (JWT) | Built. Login form/API mismatch, see PROGRESS |
-| F2 | Projects: create, list (with doc/deck counts), view, delete | Built |
-| F3 | Document upload with async ingestion (extract → chunk → embed → index) and a status badge | Built |
+| F1 | Email/password sign-up and login (JWT) | Built. Session restored on refresh, 401 → sign-in |
+| F2 | Projects: create, list (with doc/deck counts), view, delete (with confirmation) | Built |
+| F3 | Document upload (incl. PPTX) with async ingestion (extract → chunk → embed → index), live status badge, failure reason + retry | Built |
 | F4 | Table-aware extraction: tables stay intact as single chunks with headers/rows kept | Built |
-| F5 | Prompt-based deck generation: slide count, audience, theme | Built (count/audience ignored by worker) |
+| F5 | Prompt-based deck generation: slide count, audience, theme | Built (audience not persisted, so regeneration uses "General") |
 | F6 | 8 slide types: title, section, bullet, two_column, table, chart, quote, summary | Built |
-| F7 | Deterministic table pagination (e.g. 25 rows → 10 + 10 + 5) | Built and tested |
+| F7 | Deterministic pagination: tables by rows/height, bullet/summary/two-column lists as "(cont.)" slides; titles/quotes shrink to fit | Built and tested |
 | F8 | 5 PPT themes: Professional, Minimal, Dark, Corporate, Modern | Built |
 | F9 | Per-slide citations (document, page, section, excerpt) shown in the footer and preview | Built |
 | F10 | Generation progress (job status + %) | Built (polling) |
-| F11 | In-browser slide preview and `.pptx` download | Built (download auth bug) |
-| F12 | Regenerate a single slide with instructions | Partial: updates DB only, `.pptx` not re-rendered |
+| F11 | In-browser slide preview (all 8 types) and `.pptx` download, delete deck | Built |
+| F12 | Regenerate a single slide with instructions (same type, `.pptx` re-rendered) | Built |
 | F13 | Light/dark UI theme toggle | Built |
 
 ## 5. Non-goals (for now)

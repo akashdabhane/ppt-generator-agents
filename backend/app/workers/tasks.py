@@ -2,6 +2,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 from fastapi import BackgroundTasks
+from sqlalchemy import select
 from app.core.config import settings
 from app.workers.celery_app import celery_app
 from app.database.session import SessionLocal
@@ -39,6 +40,12 @@ def run_document_ingestion(document_id: str):
             # Store in DB & Vector Store
             doc.status = DocumentStatus.EMBEDDING
             db.commit()
+
+            # Idempotent: a reindex/retry replaces this document's previous chunks instead of duplicating them
+            vector_store.delete_document_chunks(doc.project_id, doc.id)
+            for old in db.execute(select(DocumentChunk).where(DocumentChunk.document_id == doc.id)).scalars():
+                db.delete(old)
+            db.flush()
 
             vector_ids = vector_store.upsert_chunks(doc.project_id, chunks_data)
 

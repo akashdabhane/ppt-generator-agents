@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Dict, Any, List, TypedDict, Optional
+import re
+from typing import Dict, Any, List, TypedDict, Optional, get_args
 from pydantic import BaseModel
 from app.core.config import settings
 from app.rag.retriever import retriever
@@ -13,6 +14,30 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o",
     "google": "gemini-2.5-flash",
 }
+
+
+# JSON shape of each slide type, shown to the LLM. Must match app/schemas/presentation_spec.py.
+SLIDE_TYPE_SCHEMAS = {
+    "title": '{ "type": "title", "title": str, "subtitle": str }',
+    "section": '{ "type": "section", "title": str, "subtitle": str }',
+    "bullet": '{ "type": "bullet", "title": str, "bullets": [str, ...] }',
+    "two_column": '{ "type": "two_column", "title": str, "left_title": str, "left_content": [str, ...], '
+                  '"right_title": str, "right_content": [str, ...] }',
+    "table": '{ "type": "table", "title": str, "columns": [str, ...], "rows": [[str, ...], ...] }',
+    "chart": '{ "type": "chart", "title": str, "chart_type": "bar"|"line"|"pie", "labels": [str, ...], "values": [float, ...] }',
+    "quote": '{ "type": "quote", "title": str, "quote": str, "author": str }',
+    "summary": '{ "type": "summary", "title": str, "key_takeaways": [str, ...] }',
+}
+SLIDE_SPEC_CLASSES = {cls.model_fields["type"].default: cls for cls in get_args(SlideSpec)}
+CITATION_SHAPE = '{ "document_name": str, "page": int|null, "section": str, "excerpt": str }'
+
+
+class SlideRegenerationUnavailable(Exception):
+    """Raised when a slide type can't be regenerated without an LLM (no invented fallback content)."""
+
+
+class NoGroundingContextError(Exception):
+    """Raised when retrieval finds nothing to ground the deck on. Generating anyway would mean inventing content."""
 
 
 class GraphState(TypedDict):
@@ -70,19 +95,11 @@ class LangGraphRAGEngine:
 
         # Step 2: Hybrid Context Retrieval
         contexts = retriever.retrieve(project_id, prompt, sub_queries=sub_queries)
-
-        # Build context document text block for LLM prompt
-        context_str = ""
-        citations_list = []
-        for c in contexts:
-            doc_info = f"Document: {c['document']} (Page {c.get('page') or 'N/A'}, Section: {c.get('section')})"
-            context_str += f"\n--- {doc_info} ---\n{c['content']}\n"
-            citations_list.append({
-                "document_name": c['document'],
-                "page": c.get('page'),
-                "section": c.get('section'),
-                "excerpt": c['content'][:150] + "..." if len(c['content']) > 150 else c['content']
-            })
+        if not contexts:
+            raise NoGroundingContextError(
+                "No content from this project's documents could be retrieved. Upload documents, wait until they "
+                "show INDEXED (re-index them if the server was restarted), then try again."
+            )
 
         llm = self._get_llm()
 
@@ -91,6 +108,7 @@ class LangGraphRAGEngine:
             return self._generate_fallback_spec(prompt, contexts, num_slides, theme)
 
         # Step 3: LLM Generation of Structured Presentation Spec
+        type_lines = "\n".join(f"  {i}. \"{t}\": {shape}" for i, (t, shape) in enumerate(SLIDE_TYPE_SCHEMAS.items(), 1))
         system_prompt = f"""You are an expert presentation designer.
 Generate a structured JSON presentation specification based strictly on the retrieved document context below.
 Do NOT fabricate information not present in the context.
@@ -102,117 +120,190 @@ CRITICAL RULES:
 - Output MUST be a single valid JSON object and nothing else, shaped exactly like:
   {{ "title": str, "subtitle": str, "slides": [ <slide>, ... ] }}
 - Produce exactly {num_slides} slides. Start with a "title" slide and end with a "summary" slide.
-- Every slide except "title" should include "citations": [{{ "document_name": str, "page": int|null, "section": str, "excerpt": str }}]
+- Every slide except "title" should include "citations": [{CITATION_SHAPE}]
   taken from the document headers in the context below.
 - Only use "table" or "chart" slides when the context contains the actual numbers.
 - Do NOT output any layout coordinates, x, y, width, height, font sizes, or inline styling.
 - Available slide types:
-  1. "title": {{ "type": "title", "title": str, "subtitle": str }}
-  2. "section": {{ "type": "section", "title": str, "subtitle": str }}
-  3. "bullet": {{ "type": "bullet", "title": str, "bullets": [str, ...] }}
-  4. "two_column": {{ "type": "two_column", "title": str, "left_title": str, "left_content": [str, ...], "right_title": str, "right_content": [str, ...] }}
-  5. "table": {{ "type": "table", "title": str, "columns": [str, ...], "rows": [[str, ...], ...] }}
-  6. "chart": {{ "type": "chart", "title": str, "chart_type": "bar"|"line"|"pie", "labels": [str, ...], "values": [float, ...] }}
-  7. "quote": {{ "type": "quote", "title": str, "quote": str, "author": str }}
-  8. "summary": {{ "type": "summary", "title": str, "key_takeaways": [str, ...] }}
+{type_lines}
 
 Retrieved Context:
-{context_str}
+{self._context_block(contexts)}
 """
         response = llm.invoke(system_prompt + f"\nUser request: {prompt}\n\nGenerate the PresentationSpec JSON:")
 
         try:
-            return self._parse_spec(response.content)
+            return self._ground_citations(self._parse_spec(response.content), contexts)
         except Exception as e:
             logger.warning(f"LLM returned an invalid PresentationSpec ({e}). Using deterministic fallback spec.")
             return self._generate_fallback_spec(prompt, contexts, num_slides, theme)
 
+    @staticmethod
+    def _context_block(contexts: List[Dict[str, Any]]) -> str:
+        block = ""
+        for c in contexts:
+            block += f"\n--- Document: {c['document']} (Page {c.get('page') or 'N/A'}, Section: {c.get('section')}) ---\n{c['content']}\n"
+        return block
+
+    def regenerate_slide(self, project_id: str, deck_prompt: str, current: Dict[str, Any],
+                         instructions: Optional[str] = None, audience: str = "General") -> SlideSpec:
+        """Rewrites one slide, keeping its type, grounded in freshly retrieved context."""
+        slide_type = current.get("type", "bullet")
+        slide_cls = SLIDE_SPEC_CLASSES.get(slide_type, SLIDE_SPEC_CLASSES["bullet"])
+        focus = " ".join(x for x in [instructions, current.get("title")] if x) or deck_prompt
+        contexts = retriever.retrieve(project_id, focus, sub_queries=[deck_prompt])
+        if not contexts:
+            raise NoGroundingContextError(
+                "No content from this project's documents could be retrieved to regenerate this slide."
+            )
+
+        llm = self._get_llm()
+        if not llm:
+            return self._fallback_slide(slide_type, current, contexts)
+
+        current_json = json.dumps({k: v for k, v in current.items() if k != "citations"}, ensure_ascii=False)
+        prompt = f"""You are revising ONE slide of an existing presentation about: {deck_prompt}
+Target Audience: {audience}
+
+Current slide: {current_json}
+User instructions: {instructions or "Improve this slide using the most relevant facts from the context."}
+
+CRITICAL RULES:
+- Output MUST be a single valid JSON object and nothing else, shaped exactly like:
+  {SLIDE_TYPE_SCHEMAS.get(slide_type, SLIDE_TYPE_SCHEMAS["bullet"])[:-1].rstrip()}, "citations": [{CITATION_SHAPE}] }}
+- Keep "type" exactly "{slide_type}".
+- Use ONLY facts from the retrieved context below. Do NOT fabricate information.
+- Do NOT output any layout coordinates, sizes, fonts or styling.
+
+Retrieved Context:
+{self._context_block(contexts)}
+
+Generate the slide JSON:"""
+        response = llm.invoke(prompt)
+        content = response.content
+        if isinstance(content, list):
+            content = "".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+        raw = str(content)
+        start, end = raw.find("{"), raw.rfind("}")
+        try:
+            data = json.loads(raw[start:end + 1])
+            data["type"] = slide_type
+            slide = slide_cls.model_validate(data)
+        except Exception as e:
+            logger.warning(f"LLM returned an invalid {slide_type} slide ({e}). Using fallback slide.")
+            return self._fallback_slide(slide_type, current, contexts)
+        spec = self._ground_citations(PresentationSpec(title="", slides=[slide]), contexts)
+        return spec.slides[0]
+
+    def _fallback_slide(self, slide_type: str, current: Dict[str, Any], contexts: List[Dict[str, Any]]) -> SlideSpec:
+        """No-LLM regeneration built only from retrieved excerpts, for the types that can be built that way."""
+        title = current.get("title") or "Slide"
+        text_contexts = [c for c in contexts if not c.get("is_table")]
+        if slide_type in ("bullet", "summary") and text_contexts:
+            items, cites = [], []
+            for c in text_contexts:
+                for sentence in self._sentences(c["content"], 2):
+                    if len(items) < 5:
+                        items.append(sentence)
+                        if not cites or cites[-1].document_name != c["document"] or cites[-1].page != c.get("page"):
+                            cites.append(self._citation_for(c))
+            key = "bullets" if slide_type == "bullet" else "key_takeaways"
+            return SLIDE_SPEC_CLASSES[slide_type].model_validate(
+                {"type": slide_type, "title": title, key: items, "citations": [c.model_dump() for c in cites]})
+        if slide_type == "table":
+            tbl_ctx = next((c for c in contexts if c.get("is_table") and (c.get("table_data") or {}).get("rows")), None)
+            if tbl_ctx:
+                tbl = tbl_ctx["table_data"]
+                return SLIDE_SPEC_CLASSES["table"].model_validate({
+                    "type": "table", "title": title,
+                    "columns": [str(h) for h in tbl.get("headers", [])],
+                    "rows": [[str(v) for v in row] for row in tbl["rows"]],
+                    "citations": [self._citation_for(tbl_ctx).model_dump()],
+                })
+        raise SlideRegenerationUnavailable(
+            f"Regenerating a {slide_type.replace('_', '-')} slide needs an AI model. "
+            "Configure an LLM API key, or edit this slide in the downloaded .pptx."
+        )
+
+    @staticmethod
+    def _citation_for(context: Dict[str, Any]) -> Citation:
+        content = context["content"]
+        return Citation(
+            document_name=context["document"],
+            page=context.get("page"),
+            section=context.get("section"),
+            excerpt=content[:150] + "..." if len(content) > 150 else content,
+        )
+
+    @staticmethod
+    def _ground_citations(spec: PresentationSpec, contexts: List[Dict[str, Any]]) -> PresentationSpec:
+        """Drops citations to documents that were not in the retrieved context (the LLM made them up)."""
+        known = {c["document"] for c in contexts}
+        dropped = 0
+        for slide in spec.slides:
+            valid = [c for c in slide.citations if c.document_name in known]
+            dropped += len(slide.citations) - len(valid)
+            slide.citations = valid
+        if dropped:
+            logger.warning(f"Dropped {dropped} citation(s) to documents that were not retrieved.")
+        return spec
+
+    @staticmethod
+    def _sentences(text: str, max_items: int, max_len: int = 220) -> List[str]:
+        """Verbatim sentences from a chunk, so fallback slides only ever repeat source text."""
+        parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", text) if p.strip()]
+        picked = [p for p in parts if len(p) >= 20] or parts
+        return [p if len(p) <= max_len else p[:max_len].rsplit(" ", 1)[0] + "…" for p in picked[:max_items]]
+
     def _generate_fallback_spec(self, prompt: str, contexts: List[Dict[str, Any]], num_slides: int, theme: str) -> PresentationSpec:
-        citations = []
-        if contexts:
-            c = contexts[0]
-            citations.append(Citation(
-                document_name=c["document"],
-                page=c.get("page"),
-                section=c.get("section"),
-                excerpt=c["content"][:100]
-            ))
-
-        slides: List[SlideSpec] = []
-        slides.append({
+        """
+        Deck built without an LLM, strictly from retrieved excerpts: every bullet, table cell and takeaway is
+        copied from a source chunk and cited to it. Nothing is invented (no sample numbers, no generic advice).
+        """
+        deck_title = prompt.title() if len(prompt) < 60 else "Document Briefing"
+        slides: List[Dict[str, Any]] = [{
             "type": "title",
-            "title": prompt.title() if len(prompt) < 60 else "Executive Report & Analysis",
-            "subtitle": f"AI-Generated Presentation • Theme: {theme}",
-            "citations": citations
-        })
+            "title": deck_title,
+            "subtitle": "Draft assembled directly from document excerpts (no AI model configured)",
+        }]
 
-        slides.append({
-            "type": "bullet",
-            "title": "Executive Summary",
-            "bullets": [
-                "Analysis based on uploaded project knowledge base",
-                "Key trends and findings synthesized directly from source documents",
-                "Factual integrity preserved with document citation tracking",
-                "Deterministic layout rendering for visual consistency"
-            ],
-            "citations": citations
-        })
+        content_slots = max(num_slides - 2, 1)
+        takeaways: List[str] = []
+        summary_citations: List[Citation] = []
+        for c in contexts[:content_slots]:
+            citation = self._citation_for(c)
+            where = c["document"] + (f", p. {c['page']}" if c.get("page") else "")
+            section = c.get("section")
+            heading = section if section and section != "General" else where
 
-        # Search for any extracted table data in context
-        table_context = next((c for c in contexts if c.get("is_table") and c.get("table_data")), None)
-        if table_context and table_context["table_data"]:
-            tbl = table_context["table_data"]
+            tbl = c.get("table_data") if c.get("is_table") else None
+            if tbl and tbl.get("headers") and tbl.get("rows"):
+                slides.append({
+                    "type": "table",
+                    "title": heading,
+                    "columns": [str(h) for h in tbl["headers"]],
+                    "rows": [[str(v) for v in row] for row in tbl["rows"]],
+                    "citations": [citation],
+                })
+                continue
+
+            bullets = self._sentences(c["content"], 5)
+            if not bullets:
+                continue
+            slides.append({"type": "bullet", "title": heading, "bullets": bullets, "citations": [citation]})
+            if len(takeaways) < 4:
+                takeaways.append(bullets[0])
+                summary_citations.append(citation)
+
+        if takeaways:
             slides.append({
-                "type": "table",
-                "title": f"Data Summary - {table_context.get('section', 'Table')}",
-                "columns": tbl.get("headers", ["Category", "Value"])[:5],
-                "rows": tbl.get("rows", [["Sample", "100"]])[:10],
-                "citations": citations
+                "type": "summary",
+                "title": "Key Points from the Sources",
+                "key_takeaways": takeaways,
+                "citations": summary_citations,
             })
 
-        slides.append({
-            "type": "chart",
-            "title": "Quarterly Performance Metrics",
-            "chart_type": "bar",
-            "labels": ["Q1", "Q2", "Q3", "Q4"],
-            "values": [35.0, 42.5, 28.0, 50.0],
-            "citations": citations
-        })
-
-        slides.append({
-            "type": "two_column",
-            "title": "Key Challenges & Strategic Solutions",
-            "left_title": "Identified Challenges",
-            "left_content": [
-                "Operational bottlenecks in Q3",
-                "Regional distribution delays",
-                "Increased overhead costs"
-            ],
-            "right_title": "Proposed Solutions",
-            "right_content": [
-                "Streamline fulfillment workflows",
-                "Expand regional logistics network",
-                "Optimize resource allocation"
-            ],
-            "citations": citations
-        })
-
-        slides.append({
-            "type": "summary",
-            "title": "Strategic Next Steps",
-            "key_takeaways": [
-                "Execute operational recommendations across all business units",
-                "Monitor Q4 revenue and performance benchmarks closely",
-                "Review findings with leadership team"
-            ],
-            "citations": citations
-        })
-
-        return PresentationSpec(
-            title=prompt.title() if len(prompt) < 60 else "Presentation Overview",
-            subtitle=f"Prepared for Project Analysis",
-            slides=slides
-        )
+        return PresentationSpec(title=deck_title, subtitle="Document excerpts", slides=slides)
 
 
 rag_engine = LangGraphRAGEngine()

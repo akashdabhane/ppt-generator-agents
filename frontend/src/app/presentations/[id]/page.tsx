@@ -2,30 +2,29 @@
 
 import { useState, use } from "react";
 import Link from "next/link";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
 import { api, downloadPresentation } from "@/lib/api";
+import { apiErrorDetail, type Presentation as Deck } from "@/lib/types";
 import {
-  Presentation,
   Download,
   ArrowLeft,
   RefreshCw,
   FileText,
-  Sparkles,
   ChevronLeft,
   ChevronRight,
-  BarChart3
+  BarChart3,
+  CheckCircle2
 } from "lucide-react";
 
 export default function PresentationPreviewPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const presentationId = resolvedParams.id;
-  const queryClient = useQueryClient();
 
   const [activeSlideIndex, setActiveSlideIndex] = useState(0);
   const [regenPrompt, setRegenPrompt] = useState("");
   const [isRegenModalOpen, setIsRegenModalOpen] = useState(false);
 
-  const { data: presentation, refetch } = useQuery({
+  const { data: presentation, refetch } = useQuery<Deck>({
     queryKey: ["presentation", presentationId],
     queryFn: async () => (await api.get(`/presentations/${presentationId}`)).data,
   });
@@ -49,6 +48,15 @@ export default function PresentationPreviewPage({ params }: { params: Promise<{ 
       setRegenPrompt("");
     },
   });
+
+  const regenError = regenMutation.isError
+    ? apiErrorDetail(regenMutation.error, "Could not regenerate this slide. Please try again.")
+    : null;
+
+  const closeRegenModal = () => {
+    setIsRegenModalOpen(false);
+    regenMutation.reset();
+  };
 
   return (
     <div className="space-y-6 py-2">
@@ -97,7 +105,7 @@ export default function PresentationPreviewPage({ params }: { params: Promise<{ 
           <h3 className="text-xs font-semibold text-slate-500 dark:text-zinc-400 uppercase tracking-wider mb-2">
             Slide Reel
           </h3>
-          {slides.map((s: any, idx: number) => (
+          {slides.map((s, idx) => (
             <button
               key={s.id}
               onClick={() => setActiveSlideIndex(idx)}
@@ -189,6 +197,30 @@ export default function PresentationPreviewPage({ params }: { params: Promise<{ 
                   </div>
                 )}
 
+                {currentSlide.slide_type === "quote" && (
+                  <blockquote className="border-l-4 border-emerald-600 dark:border-emerald-400 pl-5 py-2 space-y-3">
+                    <p className="text-lg sm:text-xl italic text-slate-800 dark:text-zinc-100">
+                      &ldquo;{currentSlide.content_json?.quote}&rdquo;
+                    </p>
+                    {currentSlide.content_json?.author && (
+                      <footer className="text-sm font-semibold text-slate-600 dark:text-zinc-300">
+                        &mdash; {currentSlide.content_json.author}
+                      </footer>
+                    )}
+                  </blockquote>
+                )}
+
+                {currentSlide.slide_type === "summary" && (
+                  <ul className="space-y-3">
+                    {currentSlide.content_json?.key_takeaways?.map((t, i) => (
+                      <li key={i} className="flex items-start space-x-3 text-slate-800 dark:text-zinc-100 text-sm sm:text-base font-semibold">
+                        <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+                        <span>{t}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
                 {currentSlide.slide_type === "chart" && (
                   <div className="bg-stone-50 dark:bg-zinc-950 p-6 rounded-xl border border-stone-200 dark:border-zinc-800 text-center space-y-4">
                     <BarChart3 className="w-12 h-12 text-emerald-600 dark:text-emerald-400 mx-auto" />
@@ -242,7 +274,7 @@ export default function PresentationPreviewPage({ params }: { params: Promise<{ 
                 <span>RAG Source Citations</span>
               </h4>
               <div className="space-y-2">
-                {currentSlide.citations_json.map((c: any, i: number) => (
+                {currentSlide.citations_json.map((c, i) => (
                   <div key={i} className="bg-stone-50 dark:bg-zinc-950 p-3 rounded-lg border border-stone-200 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-300">
                     <span className="font-semibold text-slate-900 dark:text-white">{c.document_name}</span>
                     {c.page && <span> • Page {c.page}</span>}
@@ -273,9 +305,15 @@ export default function PresentationPreviewPage({ params }: { params: Promise<{ 
               className="w-full bg-stone-50 dark:bg-zinc-950 border border-stone-300 dark:border-zinc-800 rounded-lg p-3 text-slate-900 dark:text-white placeholder-slate-400 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
 
+            {regenError && (
+              <div className="bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 p-3 rounded-xl text-xs text-red-700 dark:text-red-300">
+                {regenError}
+              </div>
+            )}
+
             <div className="flex items-center justify-end space-x-3 pt-2 border-t border-stone-200 dark:border-zinc-800">
               <button
-                onClick={() => setIsRegenModalOpen(false)}
+                onClick={closeRegenModal}
                 className="px-4 py-2 text-slate-500 dark:text-zinc-400 hover:text-slate-900 text-xs font-medium transition"
               >
                 Cancel
